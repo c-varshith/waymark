@@ -1,5 +1,55 @@
 # WAYMARK realtime inference changes
 
+## Phase 4: condition-aware live scoring and rain threshold
+
+- Set `RAIN_MM=1.0` and `RAIN_EXIT_MM=0.5` in `backend/realtime_config.py`. The station comparison supplied for Houston Hobby and IAH (2017–2022) found the archive rainy-hour share was 7.8% at 0.5 mm versus about 3.5% at the gauges, while the 1.0 mm archive share was 5.2% versus about 5% at the gauges' smallest step. At 1.0 mm the archive's crash rain share (7.0%) is also close to the dataset rain flag (7.4%). This is a calibration choice from the supplied station check, not evidence that rain causes crashes.
+- Historical weather tags, lift construction, runtime context and the validator share the condition definitions in `backend/realtime_config.py` and `backend/conditions.py`. Rain enters at 1.0 mm; live rain clears only after two polls strictly below 0.5 mm. Night comes from Open-Meteo `is_day`; rush is weekday local time in `America/Chicago` during 07:00–10:00 or 16:00–19:00.
+- Rebuilt `backend/ml_artifacts/condition_lift.json` using complete weather years and crashes through 2022 at 1.0 mm. Version: `lift-615a78a5`; 151,601 training crash rows; 1,716 cells have at least one condition-qualified lift. Citywide rain crash/hour ratio `L=1.298`; night `L=0.531`; rush `L=2.253`. The night ratio below one is retained as a lower multiplier; it is not described as a citywide hazard increase.
+- Archive-to-dataset rain-flag threshold sweep (169,428 crashes, 59,485 joined hours):
+
+| Rain threshold | Archive rainy-hour share | Archive crash rain share | Dataset rain-flag share | Precision | Recall | Cohen's κ |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.1 mm | 22.3% | 27.9% | 7.4% | 21.5% | 81.1% | 0.252 |
+| 0.3 mm | 11.6% | 14.9% | 7.4% | 30.9% | 62.4% | 0.349 |
+| 0.5 mm | 8.5% | 10.9% | 7.4% | 36.1% | 53.5% | 0.376 |
+| 1.0 mm | 5.4% | 7.0% | 7.4% | 41.5% | 39.6% | 0.359 |
+| 2.0 mm | 3.0% | 3.9% | 7.4% | 48.1% | 25.6% | 0.298 |
+
+  Precision/recall/kappa compare archive tags with the accident dataset's flag; station shares are a separate gauge comparison. Agreement alone is not a calibration target because the positive rates differ.
+- Re-ran the 2022 held-out rain robustness check with `--rain-mm 0.5 --rain-mm 1.0 --rain-mm 2.0` (125,784 training crash rows; 25,817 held-out crashes; cell score evaluated over the packaged runtime's 8,275 cells). Per threshold, the 2022 archive has 8,760 hours, with respectively 531 / 329 / 209 rain hours, 1,967 / 1,170 / 769 rain-tagged crash rows, and 1,256 / 844 / 596 rain-positive cells among the 8,275 scored cells. The changing AUC and top-5% precision are therefore due to changing per-cell rain-occurrence labels; the evaluated cell count stays fixed. The 2.0 mm result has the smallest positive set and its top-5% precision is less stable.
+- The per-condition lift is **OPT_IN**, not default-on: rain-cell Spearman rho was 0.077 / 0.041 / 0.048 at 0.5 / 1.0 / 2.0 mm. Rain AUC changed 0.789→0.784 / 0.785→0.778 / 0.785→0.777; top-5% precision changed 0.659→0.517 / 0.481→0.333 / 0.367→0.225. None of the thresholds improved held-out rain ranking, so Live is an explicit user-selected mode and Baseline remains the map default.
+- Night and rush held-out performance is unchanged across the rain sweep. The 2022 archive has 4,322 night hours / 1,560 rush hours; these label 3,323 / 3,269 positive cells among the runtime's 8,275 cells. Night rho is 0.153, AUC 0.7602→0.7602, and top-5% precision 0.923→0.896. Rush rho is 0.179, AUC 0.7977→0.7970, and top-5% precision 0.952→0.915. Both condition lifts slightly reduce held-out ranking metrics.
+- The production artifact `lift-615a78a5` was built with `--through-year 2022`, so it includes 2017–2022. It is not the artifact used for the held-out lift evaluation. For each validation threshold, `validate_condition_lift.py` calls `build_lift(..., through_year=2021, ...)`, then compares with 2022; its temporary lift fit uses only 2017–2021. The packaged LightGBM training code separately uses features through 2020 to train against 2021 labels, then evaluates features through 2021 against 2022 labels.
+- Added paired cell-bootstrap 95% percentile intervals for lifted-minus-baseline AUC and top-5% precision. The command was run with 1,000 resamples and seed `20261114`; each replicate uses the same resampled cell indices for baseline and lifted scores. Results below use all 8,275 cells and the 2022 per-cell condition labels described above:
+
+  The complete machine-readable result, including point metrics, sample counts, and intervals, is [condition_lift_2022_bootstrap.json](validation/condition_lift_2022_bootstrap.json).
+
+| Condition | Rain threshold | ΔAUC [95% CI] | Δ top-5% precision [95% CI] |
+|---|---:|---:|---:|
+| Rain | 0.5 mm | -0.0048 [-0.0065, -0.0029] | -14.3 [-19.6, -8.7] pp |
+| Rain | 1.0 mm | -0.0073 [-0.0096, -0.0047] | -14.7 [-20.5, -9.2] pp |
+| Rain | 2.0 mm | -0.0079 [-0.0112, -0.0046] | -14.3 [-19.1, -8.5] pp |
+| Night | 0.5 mm | -0.0001 [-0.0008, 0.0007] | -2.7 [-5.6, 0.2] pp |
+| Night | 1.0 mm | -0.0001 [-0.0008, 0.0007] | -2.7 [-5.8, 0.2] pp |
+| Night | 2.0 mm | -0.0001 [-0.0008, 0.0007] | -2.7 [-5.8, 0.2] pp |
+| Rush | 0.5 mm | -0.0007 [-0.0013, -0.0001] | -3.6 [-6.0, -1.2] pp |
+| Rush | 1.0 mm | -0.0007 [-0.0013, -0.0001] | -3.6 [-6.3, -1.2] pp |
+| Rush | 2.0 mm | -0.0007 [-0.0013, -0.0001] | -3.6 [-6.0, -1.2] pp |
+
+  Rain intervals exclude zero in the negative direction at all three thresholds. Night intervals span zero; rush intervals are small but negative. These are cell-resampling intervals and do not account for spatial dependence between neighboring cells.
+- At the configured 1.0 mm threshold, the rain component lifts 790 cells, shifts the mean citywide score by 0.835 points, and moves 133 cells above the 80-point alert threshold. Combined rain/night/rush shifts 1,402 cells with a 1.412-point mean and moves 209 cells above 80. These are model-score impacts, not observed injury reductions.
+- Added cached, server-side Open-Meteo hourly polling at ten-minute intervals, a three-second timeout, a five-failure circuit breaker, `ok`/`stale`/`unavailable` status, and an in-memory cache only. Live predictions reject stale/unavailable weather instead of inventing readings. The context endpoint returns HTTP 200 with its true availability status; no provider call runs inside a request handler. The context is one Houston-centre point shared by all cells, not street-level weather.
+- Added a Baseline / Live / What-if map selector. Baseline remains selected initially; Live fetches a full city batch and refreshes on context-change events after a two-second debounce. The map retains the last successful live batch only with a visible stale/unavailable status. Cell detail displays each additive condition/incident adjustment and keeps SHAP labelled as an explanation of baseline model inputs. Alerts re-arm after the score falls below 77 (threshold 80, hysteresis 3).
+- New plain unit tests: `backend/tests/test_condition_lift.py`, `backend/tests/test_live_context.py`, `backend/tests/test_live_context_routes.py`, and `backend/tests/test_validation_bootstrap.py` (**19 passed** on Python 3.12). Frontend production build succeeds. Full-suite baseline remains the user-run Step A.1 result below; HTTP-level live-context/prediction checks listed in [phase-4.md](manual-checks/phase-4.md) still need the user's local run because TestClient hangs in this sandbox.
+- Open-Meteo's free API quota is 10,000 requests/day; ten-minute polling is 144/day per running process. The Free API is for non-commercial use and data is CC BY 4.0 with attribution. A commercial deployment needs a suitable Open-Meteo plan and attribution. No traffic provider is connected in this phase, so congestion/exposure is not represented. See [Open-Meteo API docs](https://open-meteo.com/en/docs), [terms](https://open-meteo.com/en/terms), and [license](https://open-meteo.com/en/license).
+
+## Phase 4 Step A.1: deployment Python and full-suite baseline
+
+- Pinned the project Python version to 3.12 in `.python-version` (validated by the user with Python 3.12 outside the Codex sandbox).
+- User-run full backend suite: **228 passed, 16 failed, 8 warnings, 183.18 seconds** (244 tests total).
+- Compared with the previous documented baseline of **211 passed / 15 failed**: 17 more tests pass and one more test fails. The added failure is `backend/tests/test_ml_runtime.py::test_batch_prediction_returns_scores_without_shap_and_incident_overlay_is_separate` (float `5.9999984` versus exact `6`); the other reported failures remain in audit CSV, chat fallback/card behavior, evidence, and measures.
+- The Codex sandbox still stalls in Starlette/AnyIO `TestClient`, including on a minimal FastAPI app; this result is therefore the accepted full-suite baseline. New phase logic will use non-`TestClient` unit tests here. Record the listed API/integration cases for user-run verification.
+
 ## Phase 2: incident stream and live snapshot
 
 - Added anonymous `GET /api/stream` server-sent events with sequenced IDs, 200-event replay, heartbeat, a 200-subscriber limit, bounded per-client queues, and a single `resync` marker after queue overflow.

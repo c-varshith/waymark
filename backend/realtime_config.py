@@ -18,6 +18,18 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _rush_windows() -> tuple[tuple[int, int], ...]:
+    raw = os.getenv("WAYMARK_RUSH_WINDOWS", "07-10,16-19")
+    try:
+        parsed = tuple(tuple(int(part) for part in pair.split("-", 1))
+                       for pair in raw.split(",") if pair.strip())
+        if parsed and all(len(pair) == 2 and 0 <= pair[0] < pair[1] <= 24 for pair in parsed):
+            return parsed
+    except (TypeError, ValueError):
+        pass
+    return ((7, 10), (16, 19))
+
+
 STALE_AFTER_SECONDS = _int("WAYMARK_STALE_AFTER_SECONDS", 120)
 HEARTBEAT_SECONDS = _int("WAYMARK_HEARTBEAT_SECONDS", 20)
 STREAM_MAX_SUBSCRIBERS = _int("WAYMARK_STREAM_MAX_SUBSCRIBERS", 200)
@@ -41,6 +53,25 @@ PENDING_MAX_AGE_MINUTES = _float("WAYMARK_PENDING_MAX_AGE_MINUTES", 240.0)
 OVERLAY_CAP = _float("WAYMARK_OVERLAY_CAP", 100.0)
 SWEEP_SECONDS = _float("WAYMARK_SWEEP_SECONDS", 30.0)
 SWEEP_PUBLISH_DELTA = _float("WAYMARK_SWEEP_PUBLISH_DELTA", 1.0)
+
+# Shared condition definitions. Historical tagging, validation and live inference import
+# these values so the same condition means the same thing in every path.
+RAIN_MM = _float("WAYMARK_RAIN_MM", 1.0)
+RAIN_EXIT_MM = _float("WAYMARK_RAIN_EXIT_MM", 0.5)
+RUSH_WINDOWS = _rush_windows()  # local-hour half-open ranges, weekdays only
+HOUSTON_TIMEZONE = os.getenv("WAYMARK_HOUSTON_TIMEZONE", "America/Chicago")
+LIFT_PRIOR_STRENGTH = _float("WAYMARK_LIFT_PRIOR_STRENGTH", 10.0)
+LIFT_MIN_CRASHES = _int("WAYMARK_LIFT_MIN_CRASHES", 8)
+LIFT_MIN_RHO = _float("WAYMARK_LIFT_MIN_RHO", 1.3)
+LIFT_STRENGTH = {
+    "rain": _float("WAYMARK_LIFT_STRENGTH_RAIN", 0.5),
+    "night": _float("WAYMARK_LIFT_STRENGTH_NIGHT", 0.5),
+    "rush": _float("WAYMARK_LIFT_STRENGTH_RUSH", 0.5),
+}
+LIFT_CAP_PER_CONDITION = _float("WAYMARK_LIFT_CAP_PER_CONDITION", 1.5)
+LIFT_CAP_TOTAL = _float("WAYMARK_LIFT_CAP_TOTAL", 1.75)
+ALERT_HYSTERESIS = _float("WAYMARK_ALERT_HYSTERESIS", 3.0)
+ALERT_THRESHOLD = _float("WAYMARK_ALERT_THRESHOLD", 80.0)
 
 if HALF_LIFE_MINUTES <= 0:
     HALF_LIFE_MINUTES = 120.0
