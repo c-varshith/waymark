@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { cellToParent, getResolution, gridDisk, latLngToCell } from 'h3-js'
 import 'leaflet/dist/leaflet.css'
 import { ApiError, api } from '../lib/api'
-import type { CellDetail, CellLite, LivePrediction, LiveSnapshot, PlaceSearchItem, PredictionOverrides, ServerEvent, WhatIf } from '../lib/api'
+import type { CellDetail, CellLite, LiveConditionContext, LivePrediction, LiveSnapshot, PlaceSearchItem, PredictionOverrides, ServerEvent, WhatIf } from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { DEMO_CELLS } from '../lib/demo'
 import { baseLayers } from '../lib/tiles'
@@ -28,16 +28,31 @@ import { DriverLayer } from '../components/map/DriverLayer'
 import { useLiveStream } from '../hooks/useLiveStream'
 import { ALERT_THRESHOLD, DriverModeControl } from '../components/map/DriverModeControl'
 import type { MonitorState } from '../components/map/DriverModeControl'
+import { ALERT_HYSTERESIS } from '../lib/realtimeConfig'
 
 const BASE_LAYERS = baseLayers()
 const HOUSTON: [number, number] = [29.7604, -95.3698]
 const DEFAULT_FILTERS: Filters = { confidence: 'All', maxPast: Number.POSITIVE_INFINITY, emergingOnly: false }
 const NO_SCENARIO: Scenario = { night: false, rain: false, lowVis: false }
+type MapMode = 'baseline' | 'live' | 'what-if'
 /** How often the cell under the driver is re-scored while nothing else changes. */
 const ALERT_RECHECK_MS = 30_000
 interface ScenarioBatch {
   comparison: WhatIf
   predictionsByCell: Map<string, LivePrediction>
+}
+function LiveContextChip({ context, loading, mapLoading, error }: { context: LiveConditionContext | null; loading: boolean; mapLoading: boolean; error: string | null }) {
+  const status = context?.status ?? 'unavailable'
+  const conditions = context?.active_conditions.length ? context.active_conditions.join(' · ') : 'clear conditions'
+  const observed = context?.observed_at ? new Date(context.observed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
+  const dot = status === 'ok' ? 'bg-teal' : status === 'stale' ? 'bg-brass' : 'bg-brick'
+  return <div role="status" aria-live="polite" title={context?.caveat} className="max-w-[min(84vw,26rem)] rounded-lg border border-navy/15 bg-white/95 px-3 py-2 text-[11px] font-semibold text-navy shadow-card">
+    <div className="flex items-center gap-1.5"><span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+      {status === 'ok' ? `${context?.source ?? 'Open-Meteo'} · ${conditions}${observed ? ` · ${observed}` : ''}${error ? ' · scores stale' : ''}` : status === 'stale' ? `${context?.source ?? 'Open-Meteo'} stale · last ${observed ?? 'reading'}` : 'Live weather unavailable'}
+      {mapLoading && <span className="font-normal text-navy/65">· rescoring map</span>}
+    </div>
+    {(status !== 'ok' || error) && <p className="mt-0.5 font-normal text-brick">{error || (loading ? 'Loading provider status…' : 'Live scoring is paused; stored baseline scores remain visible.')}</p>}
+  </div>
 }
 type LiveMapPrediction = Pick<LivePrediction, 'risk_score' | 'live_risk_score' | 'active_incident_count' | 'incident_overlay_points'>
 
@@ -62,6 +77,13 @@ export default function MapPage() {
 
   const cellsQ = useApi(api.cells, [])
   const summaryQ = useApi(api.summary, [])
+  const contextQ = useApi(api.liveContext, [])
+  const [mapMode, setMapMode] = useState<MapMode>('baseline')
+  const [contextRevision, setContextRevision] = useState(0)
+  const [lastLivePredictions, setLastLivePredictions] = useState<Map<string, LivePrediction>>(() => new Map())
+  const [liveBatchError, setLiveBatchError] = useState<string | null>(null)
+  const [liveBatchLoading, setLiveBatchLoading] = useState(false)
+  const contextRefreshTimer = useRef<number | null>(null)
   const cells = useMemo(() => cellsQ.data ?? [], [cellsQ.data])
   const cellsById = useMemo(() => new Map(cells.map((c) => [c.cell_id, c])), [cells])
   const scoredResolution = useMemo(() => cells.length ? getResolution(cells[0].cell_id) : 9, [cells])
@@ -110,7 +132,7 @@ export default function MapPage() {
   const [incidentRefreshKey, setIncidentRefreshKey] = useState(0)
   const [incidentLayerRefreshKey, setIncidentLayerRefreshKey] = useState(0)
   const [snapshotScoredAt, setSnapshotScoredAt] = useState<string | null>(null)
-  const scenarioActive = scenario.night || scenario.rain || scenario.lowVis
+  const scenarioActive = mapMode === 'what-if' && (scenario.night || scenario.rain || scenario.lowVis)
   const predictionOverrides = useMemo<PredictionOverrides>(() => ({
     ...(scenario.rain ? { weather_condition: 'rain' as const } : {}),
     ...(scenario.night ? { lighting: 'night' as const } : {}),
@@ -134,11 +156,28 @@ export default function MapPage() {
       }
       return { comparison: { byCell, maxAbsDelta }, predictionsByCell }
     },
-    [scenario.night, scenario.rain, scenario.lowVis, cells, cellsById],
+    [mapMode, scenario.night, scenario.rain, scenario.lowVis, cells, cellsById],
     { keepPrevious: true },
   )
   const scenarioBatch = scenarioActive ? whatIfQ.data : null
   const whatIf = scenarioBatch?.comparison ?? null
+  const liveBatchQ = useApi<LivePrediction[] | null>(
+    async (signal) => mapMode === 'live' ? api.predictBatch(cells.map((cell) => cell.cell_id), {}, signal, true) : null,
+    [mapMode, cells, contextRevision],
+    { keepPrevious: true },
+  )
+  useEffect(() => {
+    if (mapMode !== 'live') return
+    setLiveBatchLoading(liveBatchQ.loading)
+    if (liveBatchQ.data) {
+      setLastLivePredictions(new Map(liveBatchQ.data.map((prediction) => [prediction.cell_id, prediction])))
+    }
+    if (liveBatchQ.error) {
+      setLiveBatchError(liveBatchQ.error)
+    } else if (liveBatchQ.data) {
+      setLiveBatchError(null)
+    }
+  }, [mapMode, liveBatchQ.data, liveBatchQ.error, liveBatchQ.loading])
   const [incidentPredictions, setIncidentPredictions] = useState<Map<string, LiveMapPrediction>>(() => new Map())
 
   const scenarioStats = useMemo(() => {
@@ -209,6 +248,12 @@ export default function MapPage() {
           : w.scenario
         return Math.max(-1, Math.min(1, (scenarioScore - w.baseline) / (whatIf.maxAbsDelta || 1)))
       }
+      if (mapMode === 'live') {
+        const prediction = lastLivePredictions.get(c.cell_id)
+        if (!prediction) return null
+        const latestIncidentOverlay = incidentPredictions.get(c.cell_id)?.incident_overlay_points
+        return Math.min(100, prediction.risk_score + (latestIncidentOverlay ?? prediction.incident_overlay_points)) / 100
+      }
       if (colorMode === 'emerging') return c.emerging_risk ? (c.history_percentile ?? 0) / 100 : null
       if (colorMode === 'adjusted') return (c.adjusted_risk_score ?? c.risk_score) / 100
       if (colorMode === 'projection') return (c.projected_risk_score ?? c.adjusted_risk_score ?? c.risk_score) / 100
@@ -217,7 +262,7 @@ export default function MapPage() {
       if (livePrediction) return Math.min(100, c.risk_score + livePrediction.incident_overlay_points) / 100
       return c.risk_score / 100
     },
-    [whatIf, scenarioBatch, incidentPredictions, colorMode, maxIncidentCount, scenarioActive, whatIfQ.error],
+    [whatIf, scenarioBatch, incidentPredictions, lastLivePredictions, mapMode, colorMode, maxIncidentCount, scenarioActive, whatIfQ.error],
   )
   const tooltipFor = useCallback(
     (c: CellLite) =>
@@ -272,11 +317,12 @@ export default function MapPage() {
     [selectedId],
   )
   const reloadDetail = detailQ.reload
-  const reloadCells = cellsQ.reload
   const detail = detailQ.data
   const selectedPredictionQ = useApi<LivePrediction | null>(
-    (signal) => selectedId ? api.predict(selectedId, predictionOverrides, signal) : Promise.resolve(null),
-    [selectedId, predictionOverrides, incidentRefreshKey],
+    (signal) => !selectedId ? Promise.resolve(null)
+      : mapMode === 'live' ? api.predictLive(selectedId, signal)
+        : api.predict(selectedId, mapMode === 'what-if' ? predictionOverrides : {}, signal),
+    [selectedId, mapMode, predictionOverrides, incidentRefreshKey, contextRevision],
     { keepPrevious: false },
   )
   const selectedPrediction = selectedPredictionQ.data
@@ -432,11 +478,20 @@ export default function MapPage() {
       return
     }
     if (event.event === 'context.changed') {
-      reloadCells()
+      contextQ.reload()
+      if (contextRefreshTimer.current !== null) window.clearTimeout(contextRefreshTimer.current)
+      contextRefreshTimer.current = window.setTimeout(() => {
+        contextRefreshTimer.current = null
+        setContextRevision((n) => n + 1)
+      }, 2000)
       if (selectedId) setIncidentRefreshKey((n) => n + 1)
     }
-  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, reloadCells])
+  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, contextQ.reload])
   const liveStream = useLiveStream(handleLiveEvent, applyLiveSnapshot)
+
+  useEffect(() => () => {
+    if (contextRefreshTimer.current !== null) window.clearTimeout(contextRefreshTimer.current)
+  }, [])
 
   const stopLocationAlerts = useCallback(() => {
     setLocationAlertsEnabled(false)
@@ -476,14 +531,18 @@ export default function MapPage() {
     }
     const controller = new AbortController()
     setMonitor((current) => (current.kind === 'scored' ? current : { kind: 'checking' }))
-    api.predictBatch(ring, predictionOverrides, controller.signal)
+    api.predictBatch(ring, mapMode === 'what-if' ? predictionOverrides : {}, controller.signal, mapMode !== 'what-if')
       .then(async (predictions) => {
         if (controller.signal.aborted) return
         const here = predictions.find((p) => p.cell_id === locationCellId)
         setMonitor(here ? { kind: 'scored', score: here.live_risk_score, checkedAt: Date.now() } : { kind: 'outside' })
 
-        const hot = new Set(predictions.filter((p) => p.live_risk_score > ALERT_THRESHOLD).map((p) => p.cell_id))
-        for (const id of alertedCells.current) if (!hot.has(id)) alertedCells.current.delete(id)
+        const scores = new Map(predictions.map((p) => [p.cell_id, p.live_risk_score]))
+        for (const id of alertedCells.current) {
+          const score = scores.get(id)
+          if (score === undefined || score < ALERT_THRESHOLD - ALERT_HYSTERESIS) alertedCells.current.delete(id)
+        }
+        const hot = new Set(predictions.filter((p) => p.live_risk_score >= ALERT_THRESHOLD).map((p) => p.cell_id))
         // The driver's own cell first, then the highest-scoring neighbour.
         const fresh = predictions
           .filter((p) => hot.has(p.cell_id) && !alertedCells.current.has(p.cell_id))
@@ -497,7 +556,7 @@ export default function MapPage() {
         // The batch endpoint returns scores only; ask for this one cell again to get its factors.
         const contributors = top.shap_contributors.length
           ? top.shap_contributors
-          : await api.predict(top.cell_id, predictionOverrides, controller.signal).then((p) => p.shap_contributors).catch(() => [])
+          : await (mapMode === 'what-if' ? api.predict(top.cell_id, predictionOverrides, controller.signal) : api.predictLive(top.cell_id, controller.signal)).then((p) => p.shap_contributors).catch(() => [])
         if (controller.signal.aborted) return
         const factors = contributors
           .filter((item) => item.direction === 'raises')
@@ -534,7 +593,7 @@ export default function MapPage() {
         if (!controller.signal.aborted) setMonitor({ kind: 'error' })
       })
     return () => controller.abort()
-  }, [locationAlertsEnabled, locationCellId, predictionOverrides, incidentRefreshKey, recheckTick, cells.length, cellsById, driver.source, notify])
+  }, [locationAlertsEnabled, locationCellId, predictionOverrides, mapMode, incidentRefreshKey, recheckTick, cells.length, cellsById, driver.source, notify])
 
   const toggleLocationAlerts = () => {
     if (locationAlertsEnabled) {
@@ -646,6 +705,7 @@ export default function MapPage() {
 
       {/* Map status and details control stay together in the top-right control row. */}
       <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
+        {mapMode === 'live' && <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />}
         <div role="status" aria-live="polite" className={`order-0 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1.5 text-[11px] font-semibold text-navy shadow-card md:order-1 ${liveStream.state === 'offline' ? 'max-w-[min(70vw,20rem)]' : ''}`}>
           <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
           {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
@@ -717,6 +777,20 @@ export default function MapPage() {
       <div
         className={`pointer-events-none absolute inset-x-2 top-44 z-[1000] ${selectedId || reportTarget ? 'max-h-[36dvh]' : 'max-h-[70dvh]'} space-y-3 overflow-y-auto md:inset-x-auto md:bottom-4 md:left-4 md:top-4 md:max-h-none md:w-[22rem] ${leftPaneOpen ? 'block' : 'hidden'}`}
       >
+        <div className="pointer-events-auto rounded-xl border border-navy/10 bg-white/95 p-2 shadow-card">
+          <div className="grid grid-cols-3 gap-1" role="group" aria-label="Map scoring mode">
+            {(['baseline', 'live', 'what-if'] as const).map((mode) => (
+              <button key={mode} type="button" aria-pressed={mapMode === mode}
+                onClick={() => { setMapMode(mode); if (mode !== 'what-if') setScenario(NO_SCENARIO) }}
+                className={`min-h-9 rounded-lg px-2 text-xs font-bold ${mapMode === mode ? 'bg-navy text-ivory' : 'bg-ivory-200 text-navy hover:bg-ivory'}`}>
+                {mode === 'what-if' ? 'What-if' : mode === 'live' ? 'Live' : 'Baseline'}
+              </button>
+            ))}
+          </div>
+          <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live scores work</summary>
+            <p className="pb-1">Live mode applies the latest cached Houston-centre weather conditions to the historical model score. Rain lift means historically more crashes per hour in rain here; it does not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
+          </details>
+        </div>
         <div className="pointer-events-auto">
           <FilterCard
             onCollapse={() => setLeftPaneOpen(false)}
@@ -733,7 +807,7 @@ export default function MapPage() {
         <div className="pointer-events-auto">
           <WhatIfCard
             scenario={scenario}
-            onChange={setScenario}
+            onChange={(next) => { setScenario(next); setMapMode(next.night || next.rain || next.lowVis ? 'what-if' : 'baseline') }}
             loading={whatIfQ.loading}
             error={whatIfQ.error}
             meanAll={scenarioStats.all}
@@ -786,6 +860,7 @@ export default function MapPage() {
                 livePrediction={selectedPrediction}
                 livePredictionLoading={selectedPredictionQ.loading}
                 livePredictionError={selectedPredictionQ.error}
+                scoreMode={mapMode}
               />
             </div>
           )}

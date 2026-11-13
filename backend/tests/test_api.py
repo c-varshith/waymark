@@ -112,5 +112,10 @@ def test_health(client):
     body = client.get("/api/health").json()
     assert body["status"] == "ok" and body["database"] is True and body["cells"] == 4
     assert body["model_loaded"] is False  # this fixture does not enter the app lifespan
+    assert body["condition_lift_enabled"] is False
+    assert body.get("condition_lift_version") is None
     model_health = client.get("/api/health/model")
-    assert model_health.status_code == 200 and model_health.json() == {"model_loaded": False}
+    assert model_health.status_code == 200 and model_health.json() == {
+        "model_loaded": False,
+        "condition_lift_enabled": False,
+    }

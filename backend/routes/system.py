@@ -14,12 +14,14 @@ router = APIRouter(prefix="/api", tags=["system"])
 def _model_health(request: Request) -> dict[str, object]:
     runtime = getattr(request.app.state, "ml_runtime", None)
     if runtime is None:
-        return {"model_loaded": False}
+        return {"model_loaded": False, "condition_lift_enabled": False}
     with runtime._lock:
         active_incidents = len(runtime._active_incidents)
     return {"model_loaded": True, "model_version": runtime.model_version,
             "schema_version": runtime.schema_version, "feature_rows": len(runtime.features),
-            "active_incidents": active_incidents}
+            "active_incidents": active_incidents,
+            "condition_lift_enabled": runtime.condition_lift_enabled,
+            "condition_lift_version": runtime.condition_lift_version}
 
 
 @router.get("/health", response_model=Health, response_model_exclude_none=True)

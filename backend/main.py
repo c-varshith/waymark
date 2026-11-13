@@ -23,9 +23,11 @@ from .ml_runtime import ACTIVE_INCIDENT_STATUSES, InferenceRuntime
 from .realtime import Broadcaster
 from .realtime import utc_iso
 from .realtime_config import SWEEP_SECONDS
+from .live_context import LiveContextManager
 from .models_ops import IncidentReport, create_ops_tables
 from .storage import validate_storage_configuration
-from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, measures, places, realtime, regions, reports, system,
+from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, live_context as live_context_routes,
+                     measures, places, realtime, regions, reports, system,
                      predict, validation, whatif)
 
 log = logging.getLogger("waymark")
@@ -101,9 +103,17 @@ async def lifespan(app: FastAPI):
         log.exception("Live inference is unavailable; check model artifacts and feature store")
     await broadcaster.start()
     sweeper_task = asyncio.create_task(_incident_overlay_sweeper(app, broadcaster), name="waymark-incident-sweeper")
+    live_context = LiveContextManager(broadcaster=broadcaster)
+    app.state.live_context = live_context
+    context_task = asyncio.create_task(live_context.run(), name="waymark-live-context-poller")
     try:
         yield
     finally:
+        context_task.cancel()
+        try:
+            await context_task
+        except asyncio.CancelledError:
+            pass
         sweeper_task.cancel()
         try:
             await sweeper_task
@@ -118,6 +128,7 @@ app = FastAPI(title="WAYMARK API", version="2.0.0", lifespan=lifespan,
                           "Decision support only; human experts decide.")
 app.state.ml_runtime = None
 app.state.broadcaster = Broadcaster()
+app.state.live_context = None
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)   # the full cell list is ~1.6 MB of JSON
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
@@ -125,7 +136,8 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                    allow_headers=["Authorization", "Content-Type", "Last-Event-ID"])
 
 for r in (system.router, cells.router, crashes.router, incidents.router, predict.router, places.router, whatif.router, validation.router, audit.router,
-          auth.router, regions.router, reports.router, measures.router, evidence.router, chat.router, realtime.router):
+          auth.router, regions.router, reports.router, measures.router, evidence.router, chat.router, realtime.router,
+          live_context_routes.router):
     app.include_router(r)
 
 

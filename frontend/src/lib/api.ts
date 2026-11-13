@@ -450,12 +450,38 @@ export interface PredictionOverrides {
   low_visibility?: boolean
 }
 
+export interface LiveConditionContext {
+  status: 'ok' | 'stale' | 'unavailable'
+  source: string
+  scope: string
+  observed_at: string | null
+  fetched_at: string | null
+  age_seconds: number | null
+  active_conditions: Array<'rain' | 'night' | 'rush'>
+  raw_readings: { precipitation_mm?: number; weather_code?: number; is_day?: number }
+  thresholds: { rain_mm: number; rain_exit_mm: number; rain_exit_polls: number; rush_windows: number[][]; timezone: string }
+  caveat: string
+}
+
+export interface PredictionAdjustment {
+  kind: string
+  multiplier?: number | null
+  points?: number | null
+  reason: string
+  source: string
+  observed_at?: string | null
+}
+
 export interface LivePrediction {
   cell_id: string
   model_version?: string
   scored_at?: string
   context_source?: 'baseline' | 'scenario' | 'live'
   stale_after_seconds?: number
+  adjustments?: PredictionAdjustment[]
+  condition_multiplier?: number
+  active_conditions?: Array<'rain' | 'night' | 'rush'>
+  context?: LiveConditionContext | null
   risk_probability: number
   /** Percentile-style model score, 0-100. */
   risk_score: number
@@ -684,6 +710,13 @@ function toLivePrediction(raw: unknown): LivePrediction {
     context_source: raw.context_source === 'baseline' || raw.context_source === 'scenario' || raw.context_source === 'live'
       ? raw.context_source : undefined,
     stale_after_seconds: num(raw.stale_after_seconds) ?? undefined,
+    adjustments: Array.isArray(raw.adjustments) ? raw.adjustments.flatMap((value) => {
+      if (!isRec(value)) return []
+      return [{ kind: str(value.kind), multiplier: num(value.multiplier), points: num(value.points),
+        reason: str(value.reason), source: str(value.source), observed_at: typeof value.observed_at === 'string' ? value.observed_at : null }]
+    }) : [],
+    condition_multiplier: num(raw.condition_multiplier) ?? 1,
+    active_conditions: Array.isArray(raw.active_conditions) ? raw.active_conditions.filter((v): v is 'rain' | 'night' | 'rush' => v === 'rain' || v === 'night' || v === 'rush') : [],
     risk_probability,
     risk_score,
     live_risk_score,
@@ -940,11 +973,14 @@ export const api = {
   predict: async (cellId: string, overrides: PredictionOverrides = {}, signal?: AbortSignal): Promise<LivePrediction> =>
     toLivePrediction(await postJson('/api/predict', { cell_id: cellId, overrides }, signal)),
 
-  predictBatch: async (cellIds: string[], overrides: PredictionOverrides = {}, signal?: AbortSignal): Promise<LivePrediction[]> => {
+  predictLive: async (cellId: string, signal?: AbortSignal): Promise<LivePrediction> =>
+    toLivePrediction(await postJson('/api/predict', { cell_id: cellId, use_live_context: true }, signal)),
+
+  predictBatch: async (cellIds: string[], overrides: PredictionOverrides = {}, signal?: AbortSignal, useLiveContext = false): Promise<LivePrediction[]> => {
     if (!cellIds.length) return []
     const predictions: LivePrediction[] = []
     for (let offset = 0; offset < cellIds.length; offset += 10000) {
-      const raw = await postJson('/api/predict/batch', { cell_ids: cellIds.slice(offset, offset + 10000), overrides }, signal)
+      const raw = await postJson('/api/predict/batch', { cell_ids: cellIds.slice(offset, offset + 10000), overrides, use_live_context: useLiveContext }, signal)
       const envelope = isRec(raw) ? raw : {}
       predictions.push(...unwrapList(raw, ['items']).map((item) => {
         if (!isRec(item)) return toLivePrediction(item)
@@ -954,6 +990,25 @@ export const api = {
       }))
     }
     return predictions
+  },
+
+  liveContext: async (signal?: AbortSignal): Promise<LiveConditionContext> => {
+    const raw = await getJson('/api/live/context', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected live context response.', 502)
+    const status = raw.status === 'ok' || raw.status === 'stale' ? raw.status : 'unavailable'
+    const readings = isRec(raw.raw_readings) ? raw.raw_readings : {}
+    const thresholds = isRec(raw.thresholds) ? raw.thresholds : {}
+    const conditions = Array.isArray(raw.active_conditions) ? raw.active_conditions.filter((v): v is 'rain' | 'night' | 'rush' => v === 'rain' || v === 'night' || v === 'rush') : []
+    return {
+      status, source: str(raw.source, 'Open-Meteo'), scope: str(raw.scope),
+      observed_at: typeof raw.observed_at === 'string' ? raw.observed_at : null,
+      fetched_at: typeof raw.fetched_at === 'string' ? raw.fetched_at : null,
+      age_seconds: num(raw.age_seconds), active_conditions: conditions,
+      raw_readings: { precipitation_mm: num(readings.precipitation_mm) ?? undefined, weather_code: num(readings.weather_code) ?? undefined, is_day: num(readings.is_day) ?? undefined },
+      thresholds: { rain_mm: num(thresholds.rain_mm) ?? 1, rain_exit_mm: num(thresholds.rain_exit_mm) ?? 0.5, rain_exit_polls: num(thresholds.rain_exit_polls) ?? 2,
+        rush_windows: Array.isArray(thresholds.rush_windows) ? thresholds.rush_windows as number[][] : [], timezone: str(thresholds.timezone, 'America/Chicago') },
+      caveat: str(raw.caveat),
+    }
   },
 
   places: async (query: string, signal?: AbortSignal, prefix = false): Promise<PlaceSearchItem[]> => {

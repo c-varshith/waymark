@@ -1,4 +1,14 @@
 """Tests run against a tiny temporary database, never your real waymark.db."""
+import os
+
+# The settings module is imported below by backend.db/main. Clear developer configuration first
+# so test collection behaves the same with or without a repository .env file.
+for _name in tuple(os.environ):
+    if (_name.startswith(("WAYMARK_", "SUPABASE_")) or _name.endswith("_API_KEY")
+            or _name in {"DATABASE_URL", "GROQ_MODEL", "ANTHROPIC_MODEL"}):
+        os.environ.pop(_name, None)
+os.environ["WAYMARK_DISABLE_DOTENV"] = "1"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine

@@ -22,6 +22,8 @@ class Health(BaseModel):
     schema_version: Optional[int] = None
     feature_rows: Optional[int] = None
     active_incidents: Optional[int] = None
+    condition_lift_enabled: Optional[bool] = None
+    condition_lift_version: Optional[str] = None
 
 
 class ModelHealth(BaseModel):
@@ -30,6 +32,30 @@ class ModelHealth(BaseModel):
     schema_version: Optional[int] = None
     feature_rows: Optional[int] = None
     active_incidents: Optional[int] = None
+    condition_lift_enabled: bool = False
+    condition_lift_version: Optional[str] = None
+
+
+class LiveContext(BaseModel):
+    status: Literal["ok", "stale", "unavailable"]
+    source: str
+    scope: str
+    observed_at: Optional[str] = None
+    fetched_at: Optional[str] = None
+    age_seconds: Optional[float] = None
+    active_conditions: list[Literal["rain", "night", "rush"]] = Field(default_factory=list)
+    raw_readings: dict[str, Any] = Field(default_factory=dict)
+    thresholds: dict[str, Any] = Field(default_factory=dict)
+    caveat: str
+
+
+class PredictionAdjustment(BaseModel):
+    kind: str
+    multiplier: Optional[float] = None
+    points: Optional[float] = None
+    reason: str
+    source: str
+    observed_at: Optional[str] = None
 
 
 class CellLite(BaseModel):
@@ -89,11 +115,13 @@ class PredictRequest(BaseModel):
     lat: Optional[float] = Field(default=None, ge=-90, le=90)
     lng: Optional[float] = Field(default=None, ge=-180, le=180)
     overrides: PredictionOverrides = Field(default_factory=PredictionOverrides)
+    use_live_context: bool = False
 
 
 class BatchPredictRequest(BaseModel):
     cell_ids: list[str] = Field(min_length=1, max_length=10000)
     overrides: PredictionOverrides = Field(default_factory=PredictionOverrides)
+    use_live_context: bool = False
 
 
 class PredictionResponse(BaseModel):
@@ -109,6 +137,10 @@ class PredictionResponse(BaseModel):
     active_incident_count: int
     incident_overlay_points: float
     overlay_params: dict[str, object] = Field(default_factory=dict)
+    adjustments: list[PredictionAdjustment] = Field(default_factory=list)
+    condition_multiplier: float = 1.0
+    active_conditions: list[Literal["rain", "night", "rush"]] = Field(default_factory=list)
+    context: Optional[LiveContext] = None
     shap_contributors: list[ShapItem] = Field(default_factory=list)
 
 
@@ -120,6 +152,7 @@ class BatchPredictionItem(BaseModel):
     confidence: str
     active_incident_count: int
     incident_overlay_points: float
+    condition_multiplier: float = 1.0
     shap_contributors: list[ShapItem] = Field(default_factory=list)
 
 
@@ -132,6 +165,9 @@ class BatchPredictionResponse(BaseModel):
     context_source: Optional[Literal["baseline", "scenario", "live"]] = None
     stale_after_seconds: Optional[int] = None
     overlay_params: dict[str, object] = Field(default_factory=dict)
+    active_conditions: list[Literal["rain", "night", "rush"]] = Field(default_factory=list)
+    condition_lift_version: Optional[str] = None
+    context: Optional[LiveContext] = None
 
 
 class CellDetail(BaseModel):

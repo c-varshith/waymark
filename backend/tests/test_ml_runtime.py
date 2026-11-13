@@ -108,7 +108,7 @@ def test_batch_prediction_returns_scores_without_shap_and_incident_overlay_is_se
     assert live["risk_score"] == base["risk_score"]
     assert live["live_risk_score"] == pytest.approx(min(100, base["risk_score"] + 18))
     runtime.reject_incident(1)
-    assert runtime.predict(cell_ids[0])["incident_overlay_points"] == 6
+    assert runtime.predict(cell_ids[0])["incident_overlay_points"] == pytest.approx(6)
 
 
 def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay(monkeypatch):

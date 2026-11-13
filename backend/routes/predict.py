@@ -35,20 +35,44 @@ def _runtime(request: Request) -> InferenceRuntime:
     return runtime
 
 
+def _live_context(request: Request) -> dict[str, object]:
+    manager = getattr(request.app.state, "live_context", None)
+    context = manager.snapshot() if manager is not None else {"status": "unavailable", "active_conditions": []}
+    if context.get("status") != "ok":
+        raise HTTPException(503, "Live conditions unavailable or stale")
+    return context
+
+
+def _has_overrides(overrides) -> bool:
+    return any(value is not None for value in overrides.model_dump().values())
+
+
 @router.post("/predict", response_model=PredictionResponse)
 async def predict(body: PredictRequest, request: Request, response: Response = None):
     has_coordinates = body.lat is not None and body.lng is not None
     if (body.lat is None) != (body.lng is None) or (body.cell_id is None) == (not has_coordinates):
         raise HTTPException(422, "Provide either cell_id or both lat and lng.")
     runtime = _runtime(request)
+    if body.use_live_context and _has_overrides(body.overrides):
+        raise HTTPException(422, "Live conditions and what-if overrides cannot be combined.")
+    context = _live_context(request) if body.use_live_context else None
+    active_conditions = tuple(context["active_conditions"]) if context else ()
     try:
         cell_id = runtime.resolve_cell(body.cell_id, body.lat, body.lng)
         started = perf_counter()
-        result = await run_in_threadpool(runtime.predict, cell_id, body.overrides)
+        result = await run_in_threadpool(
+            runtime.predict, cell_id, body.overrides,
+            active_conditions=active_conditions,
+            condition_source="Open-Meteo current conditions" if context else "historical Open-Meteo archive",
+            condition_observed_at=context.get("observed_at") if context else None)
         elapsed_ms = (perf_counter() - started) * 1000
         if response is not None:
             response.headers["Server-Timing"] = f"infer;dur={elapsed_ms:.3f}"
         result.update(_metadata(runtime, body.overrides))
+        result["active_conditions"] = list(active_conditions)
+        if context:
+            result["context_source"] = "live"
+            result["context"] = context
         return result
     except KeyError:
         raise HTTPException(404, "No baseline features are available for this H3 cell.") from None
@@ -62,9 +86,15 @@ async def predict(body: PredictRequest, request: Request, response: Response = N
 @router.post("/predict/batch", response_model=BatchPredictionResponse)
 async def predict_batch(body: BatchPredictRequest, request: Request, response: Response = None):
     runtime = _runtime(request)
+    if body.use_live_context and _has_overrides(body.overrides):
+        raise HTTPException(422, "Live conditions and what-if overrides cannot be combined.")
+    context = _live_context(request) if body.use_live_context else None
+    active_conditions = tuple(context["active_conditions"]) if context else ()
     try:
         started = perf_counter()
-        items = await run_in_threadpool(runtime.predict_batch, body.cell_ids, body.overrides)
+        items = await run_in_threadpool(
+            runtime.predict_batch, body.cell_ids, body.overrides,
+            active_conditions=active_conditions)
         elapsed_ms = (perf_counter() - started) * 1000
         if response is not None:
             response.headers["Server-Timing"] = f"infer;dur={elapsed_ms:.3f}"
@@ -78,6 +108,9 @@ async def predict_batch(body: BatchPredictRequest, request: Request, response: R
                                    model_version=metadata["model_version"],
                                    schema_version=runtime.schema_version,
                                    scored_at=metadata["scored_at"],
-                                   context_source=metadata["context_source"],
+                                   context_source="live" if context else metadata["context_source"],
                                    stale_after_seconds=metadata["stale_after_seconds"],
-                                   overlay_params=metadata["overlay_params"])
+                                   overlay_params=metadata["overlay_params"],
+                                   active_conditions=list(active_conditions),
+                                   condition_lift_version=runtime.condition_lift_version,
+                                   context=context)
