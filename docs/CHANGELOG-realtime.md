@@ -1,5 +1,11 @@
 # WAYMARK realtime inference changes
 
+## Task 0: condition lift defaults to context only
+
+- Added `WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING`, defaulting to `false`. Live mode continues to return active condition context and per-cell reasons, while its score and ranking remain unchanged unless explicitly enabled.
+- The model health response keeps `condition_lift_enabled` for artifact availability and adds `condition_lift_applied` for whether lift currently affects scores. The UI labels the default mode “Context only, not a validated improvement.”
+- This default follows the held-out 2022 results below: rain lift reduced ranking quality, and night/rush lift showed no benefit. Baseline remains the default.
+
 ## Phase 4: condition-aware live scoring and rain threshold
 
 - Set `RAIN_MM=1.0` and `RAIN_EXIT_MM=0.5` in `backend/realtime_config.py`. The station comparison supplied for Houston Hobby and IAH (2017–2022) found the archive rainy-hour share was 7.8% at 0.5 mm versus about 3.5% at the gauges, while the 1.0 mm archive share was 5.2% versus about 5% at the gauges' smallest step. At 1.0 mm the archive's crash rain share (7.0%) is also close to the dataset rain flag (7.4%). This is a calibration choice from the supplied station check, not evidence that rain causes crashes.

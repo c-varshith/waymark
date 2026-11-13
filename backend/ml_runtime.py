@@ -241,7 +241,8 @@ class InferenceRuntime:
         return active
 
     def _condition_multiplier_vector(self, active_conditions: tuple[str, ...]) -> np.ndarray:
-        if not self.condition_lift_enabled or not active_conditions:
+        if (not self.condition_lift_enabled or not config.CONDITION_LIFT_APPLIES_TO_RANKING
+                or not active_conditions):
             return np.ones(len(self.features), dtype=float)
         multiplier = np.ones(len(self.features), dtype=float)
         for condition in active_conditions:
@@ -249,7 +250,7 @@ class InferenceRuntime:
         return np.minimum(multiplier, config.LIFT_CAP_TOTAL)
 
     def _condition_multiplier_for_cell(self, cell_id: str, active_conditions: tuple[str, ...]) -> float:
-        if not self.condition_lift_enabled:
+        if not self.condition_lift_enabled or not config.CONDITION_LIFT_APPLIES_TO_RANKING:
             return 1.0
         cell = self.condition_lift_cells.get(cell_id, {})
         condition_rows = cell.get("conditions", {})
@@ -386,7 +387,7 @@ class InferenceRuntime:
 
     def _condition_adjustments(self, cell_id: str, active_conditions: tuple[str, ...],
                                source: str, observed_at: str | None) -> list[dict[str, Any]]:
-        if not self.condition_lift_enabled:
+        if not active_conditions:
             return []
         cell = self.condition_lift_cells.get(cell_id, {})
         n = int(cell.get("n", 0))
@@ -395,23 +396,33 @@ class InferenceRuntime:
         raw_product = 1.0
         for condition in active_conditions:
             row = condition_rows.get(condition, {}) if isinstance(condition_rows, dict) else {}
-            if not row.get("prone"):
-                continue
-            multiplier = float(row["multiplier"])
-            raw_product *= multiplier
-            k = int(row.get("k", 0))
-            share = (k / n) if n else 0.0
             city_share = float(self.condition_citywide.get(condition, {}).get("p", 0.0))
             label = {"rain": "rain", "night": "night", "rush": "weekday rush hours"}[condition]
+            has_evidence = self.condition_lift_enabled and bool(row.get("prone"))
+            ranking_applied = has_evidence and config.CONDITION_LIFT_APPLIES_TO_RANKING
+            if has_evidence:
+                multiplier = float(row["multiplier"])
+                raw_product *= multiplier
+                k = int(row.get("k", 0))
+                share = (k / n) if n else 0.0
+                evidence = (f"{share:.0%} of this cell's {n} recorded crashes happened in {label}, "
+                           f"versus {city_share:.0%} citywide; historically more crashes per hour in this condition.")
+            elif row:
+                evidence = (f"{label.capitalize()} is active. This cell does not meet the condition-lift evidence "
+                            "threshold, so the condition does not change its score or ranking.")
+            else:
+                evidence = (f"{label.capitalize()} is active. Per-cell condition-lift evidence is unavailable; "
+                            "the condition does not change this cell's score or ranking.")
+            if not ranking_applied:
+                evidence += " Context only, not a validated improvement; no score or ranking change is applied."
             adjustments.append({
-                "kind": f"{condition}_lift",
-                "multiplier": multiplier,
-                "reason": (f"{share:.0%} of this cell's {n} recorded crashes happened in {label}, "
-                           f"versus {city_share:.0%} citywide; historically more crashes per hour in this condition."),
+                "kind": f"{condition}_{'lift' if ranking_applied else 'context'}",
+                **({"multiplier": multiplier} if ranking_applied else {}),
+                "reason": evidence,
                 "source": source,
                 "observed_at": observed_at,
             })
-        if raw_product > config.LIFT_CAP_TOTAL:
+        if config.CONDITION_LIFT_APPLIES_TO_RANKING and raw_product > config.LIFT_CAP_TOTAL:
             adjustments.append({
                 "kind": "condition_lift_cap",
                 "multiplier": config.LIFT_CAP_TOTAL / raw_product,

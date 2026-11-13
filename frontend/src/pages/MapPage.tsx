@@ -78,6 +78,7 @@ export default function MapPage() {
   const cellsQ = useApi(api.cells, [])
   const summaryQ = useApi(api.summary, [])
   const contextQ = useApi(api.liveContext, [])
+  const modelHealthQ = useApi(api.modelHealth, [])
   const [mapMode, setMapMode] = useState<MapMode>('baseline')
   const [contextRevision, setContextRevision] = useState(0)
   const [lastLivePredictions, setLastLivePredictions] = useState<Map<string, LivePrediction>>(() => new Map())
@@ -705,7 +706,14 @@ export default function MapPage() {
 
       {/* Map status and details control stay together in the top-right control row. */}
       <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
-        {mapMode === 'live' && <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />}
+        {mapMode === 'live' && <>
+          <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />
+          <div role="note" className="rounded-full border border-navy/15 bg-white/95 px-3 py-1.5 text-[11px] font-bold text-navy shadow-card">
+            {modelHealthQ.data?.condition_lift_applied
+              ? 'Condition lift affects ranking'
+              : 'Context only, not a validated improvement'}
+          </div>
+        </>}
         <div role="status" aria-live="polite" className={`order-0 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1.5 text-[11px] font-semibold text-navy shadow-card md:order-1 ${liveStream.state === 'offline' ? 'max-w-[min(70vw,20rem)]' : ''}`}>
           <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
           {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
@@ -787,8 +795,8 @@ export default function MapPage() {
               </button>
             ))}
           </div>
-          <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live scores work</summary>
-            <p className="pb-1">Live mode applies the latest cached Houston-centre weather conditions to the historical model score. Rain lift means historically more crashes per hour in rain here; it does not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
+          <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live context works</summary>
+            <p className="pb-1">Live mode shows the latest cached Houston-centre weather conditions and per-cell reasons. By default this is context only, not a validated improvement, and it does not change scores or rankings. Rain associations mean historically more crashes per hour in rain here; they do not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
           </details>
         </div>
         <div className="pointer-events-auto">
@@ -861,6 +869,7 @@ export default function MapPage() {
                 livePredictionLoading={selectedPredictionQ.loading}
                 livePredictionError={selectedPredictionQ.error}
                 scoreMode={mapMode}
+                conditionLiftApplied={modelHealthQ.data?.condition_lift_applied ?? false}
               />
             </div>
           )}

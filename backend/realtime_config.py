@@ -18,6 +18,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _rush_windows() -> tuple[tuple[int, int], ...]:
     raw = os.getenv("WAYMARK_RUSH_WINDOWS", "07-10,16-19")
     try:
@@ -70,6 +77,7 @@ LIFT_STRENGTH = {
 }
 LIFT_CAP_PER_CONDITION = _float("WAYMARK_LIFT_CAP_PER_CONDITION", 1.5)
 LIFT_CAP_TOTAL = _float("WAYMARK_LIFT_CAP_TOTAL", 1.75)
+CONDITION_LIFT_APPLIES_TO_RANKING = _flag("WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING", False)
 ALERT_HYSTERESIS = _float("WAYMARK_ALERT_HYSTERESIS", 3.0)
 ALERT_THRESHOLD = _float("WAYMARK_ALERT_THRESHOLD", 80.0)
 

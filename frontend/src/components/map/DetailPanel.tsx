@@ -21,6 +21,7 @@ interface Props {
   livePredictionLoading: boolean
   livePredictionError: string | null
   scoreMode: 'baseline' | 'live' | 'what-if'
+  conditionLiftApplied: boolean
 }
 
 function Stat({ label, value, primary = false }: { label: string; value: string; primary?: boolean }) {
@@ -115,7 +116,7 @@ function MeasuresSection({ detail }: { detail: CellDetail }) {
   )
 }
 
-export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError, scoreMode }: Props) {
+export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError, scoreMode, conditionLiftApplied }: Props) {
   const ref = useRef<HTMLElement>(null)
   const [staleClock, setStaleClock] = useState(() => Date.now())
 
@@ -213,8 +214,12 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
             )}
             {scoreMode === 'live' && livePrediction && (livePrediction.adjustments?.length ?? 0) > 0 && (
               <section aria-label="Live score adjustments" className="rounded-lg border border-teal/30 bg-teal/5 px-3 py-2.5">
-                <h3 className="text-sm font-bold">Live score adjustments</h3>
-                <p className="mb-1 text-xs text-navy/70">Applied in order after the baseline model score. SHAP factors below explain the baseline model only.</p>
+                <h3 className="text-sm font-bold">{conditionLiftApplied ? 'Live score adjustments' : 'Live condition context'}</h3>
+                <p className="mb-1 text-xs text-navy/70">
+                  {conditionLiftApplied
+                    ? 'Condition adjustments are applied after the baseline model score. SHAP factors below explain the baseline model only.'
+                    : 'Condition context only, not a validated improvement; it does not change the score or ranking. Incident overlays are shown separately. SHAP factors below explain the baseline model only.'}
+                </p>
                 <ul className="space-y-1.5 text-xs">
                   {livePrediction.adjustments!.map((item, index) => (
                     <li key={`${item.kind}-${index}`} className="rounded-md bg-white/80 px-2 py-1.5">

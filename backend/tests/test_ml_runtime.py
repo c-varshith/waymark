@@ -12,9 +12,11 @@ from starlette.requests import Request
 
 from backend.auth import Role, User
 from backend.ml_runtime import InferenceRuntime
+from backend import realtime_config
 from backend.models import Base, Cell
 from backend.routes.incidents import create_live_incident, review_incident
 from backend.routes.predict import predict, predict_batch
+from backend.routes.system import _model_health
 from backend.schemas import (BatchPredictRequest, IncidentReportIn, IncidentReviewIn,
                              PredictRequest, PredictionOverrides)
 
@@ -109,6 +111,40 @@ def test_batch_prediction_returns_scores_without_shap_and_incident_overlay_is_se
     assert live["live_risk_score"] == pytest.approx(min(100, base["risk_score"] + 18))
     runtime.reject_incident(1)
     assert runtime.predict(cell_ids[0])["incident_overlay_points"] == pytest.approx(6)
+
+
+def test_condition_context_is_not_applied_to_scores_by_default(monkeypatch):
+    runtime, cell_ids = runtime_fixture()
+    monkeypatch.setattr(realtime_config, "CONDITION_LIFT_APPLIES_TO_RANKING", False)
+    citywide = {name: {"p": 0.1, "h": 0.1, "L": 1.0} for name in ("rain", "night", "rush")}
+    condition_lift = {
+        "schema_version": 1,
+        "citywide": citywide,
+        "cells": {cell_ids[0]: {"n": 10, "conditions": {
+            "rain": {"k": 8, "prone": True, "multiplier": 1.5},
+            "night": {"k": 0, "prone": False, "multiplier": 1.0},
+            "rush": {"k": 0, "prone": False, "multiplier": 1.0},
+        }}},
+    }
+    runtime._load_condition_lift(condition_lift, "lift-test")
+    health = _model_health(request_for(runtime))
+    assert health["condition_lift_enabled"] is True
+    assert health["condition_lift_applied"] is False
+
+    baseline = runtime.predict(cell_ids[0])
+    context = runtime.predict(cell_ids[0], active_conditions=("rain",))
+    assert runtime.condition_lift_enabled is True
+    assert context["condition_multiplier"] == 1.0
+    assert context["risk_probability"] == baseline["risk_probability"]
+    assert context["risk_score"] == baseline["risk_score"]
+    assert context["adjustments"][0]["kind"] == "rain_context"
+    assert "context only, not a validated improvement" in context["adjustments"][0]["reason"].lower()
+
+    monkeypatch.setattr(realtime_config, "CONDITION_LIFT_APPLIES_TO_RANKING", True)
+    applied = runtime.predict(cell_ids[0], active_conditions=("rain",))
+    assert applied["condition_multiplier"] == pytest.approx(1.5)
+    assert applied["risk_probability"] > baseline["risk_probability"]
+    assert applied["adjustments"][0]["kind"] == "rain_lift"
 
 
 def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay(monkeypatch):

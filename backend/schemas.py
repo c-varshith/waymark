@@ -24,6 +24,7 @@ class Health(BaseModel):
     active_incidents: Optional[int] = None
     condition_lift_enabled: Optional[bool] = None
     condition_lift_version: Optional[str] = None
+    condition_lift_applied: Optional[bool] = None
 
 
 class ModelHealth(BaseModel):
@@ -34,6 +35,7 @@ class ModelHealth(BaseModel):
     active_incidents: Optional[int] = None
     condition_lift_enabled: bool = False
     condition_lift_version: Optional[str] = None
+    condition_lift_applied: bool = False
 
 
 class LiveContext(BaseModel):

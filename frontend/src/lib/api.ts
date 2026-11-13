@@ -463,6 +463,13 @@ export interface LiveConditionContext {
   caveat: string
 }
 
+export interface ModelHealth {
+  model_loaded: boolean
+  condition_lift_enabled: boolean
+  condition_lift_version: string | null
+  condition_lift_applied: boolean
+}
+
 export interface PredictionAdjustment {
   kind: string
   multiplier?: number | null
@@ -943,6 +950,17 @@ export const api = {
   },
 
   health: (signal?: AbortSignal) => getJson('/api/health', undefined, signal),
+
+  modelHealth: async (signal?: AbortSignal): Promise<ModelHealth> => {
+    const raw = await getJson('/api/health/model', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected model status response.', 502)
+    return {
+      model_loaded: bool(raw.model_loaded),
+      condition_lift_enabled: bool(raw.condition_lift_enabled),
+      condition_lift_version: typeof raw.condition_lift_version === 'string' ? raw.condition_lift_version : null,
+      condition_lift_applied: bool(raw.condition_lift_applied),
+    }
+  },
 
   summary: async (signal?: AbortSignal) => toSummary(await getJson('/api/summary', undefined, signal)),
 

@@ -7,6 +7,7 @@ from ..db import get_db
 from ..models import Cell
 from ..schemas import Headline, Health, ModelHealth, Summary
 from ..services import LOW_HISTORY_MAX, metric_groups
+from .. import realtime_config as config
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -14,14 +15,17 @@ router = APIRouter(prefix="/api", tags=["system"])
 def _model_health(request: Request) -> dict[str, object]:
     runtime = getattr(request.app.state, "ml_runtime", None)
     if runtime is None:
-        return {"model_loaded": False, "condition_lift_enabled": False}
+        return {"model_loaded": False, "condition_lift_enabled": False,
+                "condition_lift_applied": False}
     with runtime._lock:
         active_incidents = len(runtime._active_incidents)
     return {"model_loaded": True, "model_version": runtime.model_version,
             "schema_version": runtime.schema_version, "feature_rows": len(runtime.features),
             "active_incidents": active_incidents,
             "condition_lift_enabled": runtime.condition_lift_enabled,
-            "condition_lift_version": runtime.condition_lift_version}
+            "condition_lift_version": runtime.condition_lift_version,
+            "condition_lift_applied": (runtime.condition_lift_enabled
+                                        and config.CONDITION_LIFT_APPLIES_TO_RANKING)}
 
 
 @router.get("/health", response_model=Health, response_model_exclude_none=True)
