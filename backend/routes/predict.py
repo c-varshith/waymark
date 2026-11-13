@@ -24,6 +24,7 @@ def _metadata(runtime: InferenceRuntime, overrides) -> dict[str, object]:
         "scored_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "context_source": "scenario" if any(value is not None for value in values.values()) else "baseline",
         "stale_after_seconds": STALE_AFTER_SECONDS,
+        "overlay_params": runtime.overlay_params(),
     }
 
 
@@ -78,4 +79,5 @@ async def predict_batch(body: BatchPredictRequest, request: Request, response: R
                                    schema_version=runtime.schema_version,
                                    scored_at=metadata["scored_at"],
                                    context_source=metadata["context_source"],
-                                   stale_after_seconds=metadata["stale_after_seconds"])
+                                   stale_after_seconds=metadata["stale_after_seconds"],
+                                   overlay_params=metadata["overlay_params"])

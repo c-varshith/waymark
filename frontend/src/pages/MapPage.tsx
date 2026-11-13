@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { cellToParent, getResolution, gridDisk, latLngToCell } from 'h3-js'
 import 'leaflet/dist/leaflet.css'
 import { ApiError, api } from '../lib/api'
-import type { CellDetail, CellLite, LivePrediction, PlaceSearchItem, PredictionOverrides, WhatIf } from '../lib/api'
+import type { CellDetail, CellLite, LivePrediction, LiveSnapshot, PlaceSearchItem, PredictionOverrides, ServerEvent, WhatIf } from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { DEMO_CELLS } from '../lib/demo'
 import { baseLayers } from '../lib/tiles'
@@ -25,6 +25,7 @@ import { Toast } from '../components/ops/Toast'
 import type { ToastData } from '../components/ops/Toast'
 import { useDriverLocation } from '../hooks/useDriverLocation'
 import { DriverLayer } from '../components/map/DriverLayer'
+import { useLiveStream } from '../hooks/useLiveStream'
 import { ALERT_THRESHOLD, DriverModeControl } from '../components/map/DriverModeControl'
 import type { MonitorState } from '../components/map/DriverModeControl'
 
@@ -107,6 +108,8 @@ export default function MapPage() {
   // ---- what-if scenario
   const [scenario, setScenario] = useState<Scenario>(NO_SCENARIO)
   const [incidentRefreshKey, setIncidentRefreshKey] = useState(0)
+  const [incidentLayerRefreshKey, setIncidentLayerRefreshKey] = useState(0)
+  const [snapshotScoredAt, setSnapshotScoredAt] = useState<string | null>(null)
   const scenarioActive = scenario.night || scenario.rain || scenario.lowVis
   const predictionOverrides = useMemo<PredictionOverrides>(() => ({
     ...(scenario.rain ? { weather_condition: 'rain' as const } : {}),
@@ -131,7 +134,7 @@ export default function MapPage() {
       }
       return { comparison: { byCell, maxAbsDelta }, predictionsByCell }
     },
-    [scenario.night, scenario.rain, scenario.lowVis, cells, cellsById, incidentRefreshKey],
+    [scenario.night, scenario.rain, scenario.lowVis, cells, cellsById],
     { keepPrevious: true },
   )
   const scenarioBatch = scenarioActive ? whatIfQ.data : null
@@ -199,13 +202,12 @@ export default function MapPage() {
         const activeIncidentCount = reportedPrediction?.active_incident_count ?? scenarioPrediction?.active_incident_count ?? 0
         const modelScore = scenarioPrediction?.risk_score ?? reportedPrediction?.risk_score ?? c.risk_score
         const overlayPoints = reportedPrediction?.incident_overlay_points ?? scenarioPrediction?.incident_overlay_points ?? 0
-        const liveRiskScore = Math.min(100, modelScore + overlayPoints)
-        if (activeIncidentCount > 0 && liveRiskScore >= 80) {
-          return liveRiskScore / 100
-        }
         const w = whatIf.byCell.get(c.cell_id)
         if (!w || w.baseline === null || w.scenario === null) return null
-        return Math.max(-1, Math.min(1, (w.scenario - w.baseline) / (whatIf.maxAbsDelta || 1)))
+        const scenarioScore = activeIncidentCount > 0
+          ? Math.min(100, modelScore + overlayPoints)
+          : w.scenario
+        return Math.max(-1, Math.min(1, (scenarioScore - w.baseline) / (whatIf.maxAbsDelta || 1)))
       }
       if (colorMode === 'emerging') return c.emerging_risk ? (c.history_percentile ?? 0) / 100 : null
       if (colorMode === 'adjusted') return (c.adjusted_risk_score ?? c.risk_score) / 100
@@ -269,6 +271,8 @@ export default function MapPage() {
     (signal) => (selectedId ? api.cell(selectedId, signal) : Promise.resolve(null)),
     [selectedId],
   )
+  const reloadDetail = detailQ.reload
+  const reloadCells = cellsQ.reload
   const detail = detailQ.data
   const selectedPredictionQ = useApi<LivePrediction | null>(
     (signal) => selectedId ? api.predict(selectedId, predictionOverrides, signal) : Promise.resolve(null),
@@ -363,6 +367,7 @@ export default function MapPage() {
   const [recheckTick, setRecheckTick] = useState(0)
   /** Cells already alerted on during this visit; a cell is forgotten once it leaves the watch ring or cools down. */
   const alertedCells = useRef<Set<string>>(new Set())
+  const lastRealtimeAlertRefresh = useRef(0)
   const selectCellRef = useRef(selectCell)
   useEffect(() => {
     selectCellRef.current = selectCell
@@ -376,6 +381,62 @@ export default function MapPage() {
       return null
     }
   }, [driver.position, scoredResolution])
+
+  const applyLiveSnapshot = useCallback((snapshot: LiveSnapshot) => {
+    setSnapshotScoredAt(snapshot.scored_at)
+    setIncidentPredictions(new Map(snapshot.overlays.map((item) => [item.cell_id, {
+      risk_score: item.risk_score,
+      live_risk_score: item.live_risk_score,
+      active_incident_count: item.active_incident_count,
+      incident_overlay_points: item.incident_overlay_points,
+    }])))
+    setIncidentLayerRefreshKey((n) => n + 1)
+    if (selectedId) reloadDetail()
+  }, [selectedId, reloadDetail])
+  const handleLiveEvent = useCallback((event: ServerEvent) => {
+    const cellId = typeof event.data.cell_id === 'string' ? event.data.cell_id : null
+    if (event.event === 'prediction.updated' && cellId) {
+      if (typeof event.data.scored_at === 'string') setSnapshotScoredAt(event.data.scored_at)
+      const count = Number(event.data.active_incident_count) || 0
+      if (count <= 0) {
+        setIncidentPredictions((current) => {
+          if (!current.has(cellId)) return current
+          const next = new Map(current)
+          next.delete(cellId)
+          return next
+        })
+      } else {
+        const prediction: LiveMapPrediction = {
+          risk_score: Number(event.data.risk_score) || 0,
+          live_risk_score: Number(event.data.live_risk_score) || 0,
+          active_incident_count: count,
+          incident_overlay_points: Number(event.data.incident_overlay_points) || 0,
+        }
+        setIncidentPredictions((current) => new Map(current).set(cellId, prediction))
+      }
+      if (selectedId === cellId) setIncidentRefreshKey((n) => n + 1)
+      if (locationAlertsEnabled && locationCellId) {
+        try {
+          const inWatchRing = gridDisk(locationCellId, 1).includes(cellId)
+          if (inWatchRing && Date.now() - lastRealtimeAlertRefresh.current >= 20_000) {
+            lastRealtimeAlertRefresh.current = Date.now()
+            setIncidentRefreshKey((n) => n + 1)
+          }
+        } catch { /* ignore invalid or different resolution cells */ }
+      }
+      return
+    }
+    if ((event.event === 'incident.created' || event.event === 'incident.reviewed') && cellId) {
+      setIncidentLayerRefreshKey((n) => n + 1)
+      if (selectedId === cellId) reloadDetail()
+      return
+    }
+    if (event.event === 'context.changed') {
+      reloadCells()
+      if (selectedId) setIncidentRefreshKey((n) => n + 1)
+    }
+  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, reloadCells])
+  const liveStream = useLiveStream(handleLiveEvent, applyLiveSnapshot)
 
   const stopLocationAlerts = useCallback(() => {
     setLocationAlertsEnabled(false)
@@ -568,7 +629,7 @@ export default function MapPage() {
           centerPoints={crashesAvailable === false}
         />
         <CrashLayer enabled={!level.grouped} onAvailable={setCrashesAvailable} cellIds={placeIds ?? highlightIds} satellite={base.name === "Satellite"} />
-        <IncidentLayer enabled={true} pickMode={pickIncidentMode} refreshKey={incidentRefreshKey}
+        <IncidentLayer enabled={true} pickMode={pickIncidentMode} refreshKey={incidentLayerRefreshKey}
           onPick={(lat, lng) => { if (pickIncidentMode) { setIncidentPoint([lat, lng]); setPickIncidentMode(false) } }} />
         <DriverLayer position={driver.position} source={driver.source} pickMode={pickSimMode} onPick={placeSimLocation} />
         <FlyController target={flyTarget} />
@@ -585,6 +646,12 @@ export default function MapPage() {
 
       {/* Map status and details control stay together in the top-right control row. */}
       <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
+        <div role="status" aria-live="polite" className={`order-0 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1.5 text-[11px] font-semibold text-navy shadow-card md:order-1 ${liveStream.state === 'offline' ? 'max-w-[min(70vw,20rem)]' : ''}`}>
+          <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
+          {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
+            ? `Offline: showing scores from ${snapshotScoredAt ? new Date(snapshotScoredAt).toLocaleTimeString() : 'last snapshot'}`
+            : liveStream.state === 'reconnecting' ? 'Reconnecting to live updates' : 'Connecting to live updates'}
+        </div>
         {region ? (
           <button
             type="button"
@@ -754,29 +821,16 @@ export default function MapPage() {
         } catch (error) {
           if (!isModelInferenceFailure(error)) throw error
 
-          // Preserve the report loop when inference is unavailable; show the stored risk plus this report's demo overlay.
+          // Preserve report submission when model inference is unavailable without inventing a score contribution.
           const report = await opsApi.createIncident(body)
           cellId = report.cell_id
-          const cell = cellsById.get(cellId) ?? await api.cell(cellId).catch(() => null)
-          if (cell) {
-            const points = body.kind === 'crash' ? 20 : 10
-            const activeIncidentCount = (cell.incident_pending_count ?? 0) + (cell.incident_confirmed_count ?? 0) + 1
-            const liveRiskScore = Math.min(100, cell.risk_score + points)
-            mapPrediction = {
-              risk_score: cell.risk_score,
-              live_risk_score: liveRiskScore,
-              active_incident_count: activeIncidentCount,
-              incident_overlay_points: points,
-            }
-          }
-          notify(cell
-            ? 'Incident saved. Live inference is unavailable; the map is showing stored risk with a temporary incident overlay.'
-            : 'Incident saved. Live inference and this cell’s baseline score are unavailable; the historical map remains visible.')
+          notify('Report saved locally, score will update when the connection returns')
         }
         if (mapPrediction) {
           setIncidentPredictions((current) => new Map(current).set(cellId, mapPrediction!))
         }
-        setIncidentRefreshKey((n) => n + 1)
+        setIncidentLayerRefreshKey((n) => n + 1)
+        if (selectedId === cellId) setIncidentRefreshKey((n) => n + 1)
         cellsQ.reload()
         if (selectedId) detailQ.reload()
         setColorMode('score')

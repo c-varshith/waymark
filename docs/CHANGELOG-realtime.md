@@ -1,5 +1,35 @@
 # WAYMARK realtime inference changes
 
+## Phase 2: incident stream and live snapshot
+
+- Added anonymous `GET /api/stream` server-sent events with sequenced IDs, 200-event replay, heartbeat, a 200-subscriber limit, bounded per-client queues, and a single `resync` marker after queue overflow.
+- Added anonymous `GET /api/live/snapshot` for active incident score overlays and the latest event version. Snapshot overlays include active reports only and do not expose report GPS or free-text fields.
+- `/api/incidents`, `/api/incident`, and incident review now publish cell-only events and re-score the affected cell without SHAP. Stream publication failures are logged and do not fail the incident operation.
+- The map hydrates overlays from the snapshot, consumes per-cell updates idempotently, refreshes incident markers/detail state, and keeps the last scores visible while offline. Reconnect uses replay IDs, snapshot recovery, a 45-second watchdog, exponential backoff with jitter, and a 30-second offline snapshot poll. Hidden tabs close the stream and visible tabs snapshot before reconnecting.
+- Full-city what-if scoring no longer refetches because an incident changed: the map applies the latest incident overlay on top of the scenario score. The driver watch ring rechecks immediately for matching cell events with a 20-second throttle and retains its 30-second polling fallback.
+- The broadcaster and overlay state are in-process. Run one API worker for the demo. A multi-worker or multi-instance deployment requires shared event/overlay state (for example Redis pub/sub) to guarantee cross-worker delivery.
+- GZip verification: the active local environment uses Starlette 1.10.0; its `GZipMiddleware` excludes `text/event-stream`, so SSE responses are not gzip-buffered. `backend/requirements.txt` does not pin Starlette, so verify this behavior again if dependency versions change.
+- Five-run in-process event-hub benchmark: publish from a worker thread to two subscribers had 0.148 ms median and 0.606 ms worst delivery time. A representative compact snapshot containing one overlay was 251 bytes. This measures the server-side fan-out boundary, not HTTP/browser time.
+- Manual two-window timing steps and restart/offline checks are in [phase-2.md](manual-checks/phase-2.md). No browser-to-browser latency was measured in this implementation environment.
+
+## Phase 3: decaying, status-aware incident overlay
+
+- Incident points now decay from `occurred_at`, pending reports use a lower weight and shorter hard-age limit, confirmed reports use full weight, and rejected reports are removed immediately. All timestamps are normalized as UTC (naive database timestamps mean UTC); future event times are clamped to age zero.
+- These are chosen operational defaults, not fitted or validated coefficients: crash 20 points, near-miss 10, pending weight 0.6, confirmed 1.0, rejected 0.0, 120-minute half-life, 1-point minimum, 720-minute confirmed maximum age, 240-minute pending maximum age, and 100-point overlay cap. They live in `backend/realtime_config.py` and are overridable with `WAYMARK_CRASH_POINTS`, `WAYMARK_NEAR_MISS_POINTS`, `WAYMARK_PENDING_WEIGHT`, `WAYMARK_CONFIRMED_WEIGHT`, `WAYMARK_REJECTED_WEIGHT`, `WAYMARK_HALF_LIFE_MINUTES`, `WAYMARK_MIN_EFFECTIVE_POINTS`, `WAYMARK_MAX_AGE_MINUTES`, `WAYMARK_PENDING_MAX_AGE_MINUTES`, `WAYMARK_OVERLAY_CAP`, `WAYMARK_SWEEP_SECONDS`, and `WAYMARK_SWEEP_PUBLISH_DELTA`.
+- This is a bounded adjustment to the LightGBM score, not model retraining and not evidence that the report signal predicts future crashes.
+- The periodic sweeper removes expired in-memory signals and publishes only when points change by at least the configured threshold or reach zero. It is cancelled during application shutdown.
+- Fixed-clock formula check for one crash (before minimum-point or hard-age expiry):
+
+| Age (minutes) | Pending (0.6 weight) | Confirmed (1.0 weight) |
+|---:|---:|---:|
+| 0 | 12.00 | 20.00 |
+| 30 | 10.09 | 16.82 |
+| 60 | 8.49 | 14.14 |
+| 120 | 6.00 | 10.00 |
+| 240 | 3.00 | 5.00 |
+
+- Automated test summary: Phase 2 realtime tests 8 passed; Phase 3 decay/runtime/sweeper tests 10 passed. Existing end-to-end backend `TestClient` suite remains blocked in this Python 3.15.2 environment; see the manual checks for target-runtime verification.
+
 ## Phase 1 before
 
 Measured with `backend/.venv/bin/python scripts/bench_inference.py --runs 15` against the packaged Houston model (8,275 cells, 18 features). Runtime timings are in-process on the local development machine and include Python response serialization; they are not HTTP network timings. p95 uses NumPy's default linear percentile interpolation.

@@ -133,6 +133,8 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
   const scoredAtValid = scoredAt && Number.isFinite(scoredAt.getTime())
   const stale = !!scoredAtValid && staleClock - scoredAt.getTime() > (livePrediction?.stale_after_seconds ?? STALE_AFTER_SECONDS) * 1000
   const contextLabel = livePrediction?.context_source === 'scenario' ? 'Scenario' : livePrediction?.context_source === 'live' ? 'Live' : 'Baseline'
+  const overlayParams = livePrediction?.overlay_params
+  const pendingWeight = overlayParams?.status_weights.pending
 
   return (
     <aside
@@ -191,6 +193,12 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
               />
               <Stat label="Past crashes" value={fmtInt(detail.n_past_crashes)} />
               <Stat label="Live score (0 to 100)" value={livePrediction ? livePrediction.live_risk_score.toFixed(1) : '—'} />
+              {livePrediction && livePrediction.active_incident_count > 0 && overlayParams && (
+                <p className="col-span-2 -mt-1 text-xs font-medium text-navy/70">
+                  +{fmtPts(livePrediction.incident_overlay_points)} points from {livePrediction.active_incident_count} recent report{livePrediction.active_incident_count === 1 ? '' : 's'}
+                  {' '}(decays with a {fmtInt(overlayParams.half_life_minutes)} minute half-life{pendingWeight === undefined ? '' : `; pending reports count at ${Math.round(pendingWeight * 100)}%`})
+                </p>
+              )}
               <Stat label="Baseline" value={fmtNum(detail.risk_score, 3)} />
               <Stat label="Verified" value={fmtNum(detail.adjusted_risk_score, 3)} />
               <Stat label="Projected (estimate)" value={fmtNum(detail.projected_risk_score, 3)} />

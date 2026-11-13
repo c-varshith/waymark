@@ -5,6 +5,7 @@ import hashlib
 import json
 import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -15,11 +16,11 @@ import pandas as pd
 import shap
 
 from .services import FEATURE_LABELS
+from .incident_overlay import DEFAULT_CONFIG, aggregate, effective_points, overlay_params
+from .realtime_config import SWEEP_PUBLISH_DELTA
 
 MAX_SHAP_CONTRIBUTORS = 6
 ACTIVE_INCIDENT_STATUSES = frozenset({"pending", "confirmed"})
-CRASH_OVERLAY_POINTS = 20.0
-NEAR_MISS_OVERLAY_POINTS = 10.0
 
 
 class MLRuntimeError(RuntimeError):
@@ -41,11 +42,16 @@ class InferenceRuntime:
         self.schema_version = schema.get("schema_version")
         self.model_version: str | None = None
         self._cell_positions = {cell_id: i for i, cell_id in enumerate(features.index)}
-        self._active_incidents: dict[int, tuple[str, str]] = {}
+        self._active_incidents: dict[int, tuple[str, str, str, datetime]] = {}
+        self._last_published_overlay_points: dict[str, float] = {}
         self._lock = threading.RLock()
         self._score_cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray, list[str]]] = OrderedDict()
         self._cache_lock = threading.RLock()
         self._score_cache_limit = 8
+
+    @staticmethod
+    def overlay_params() -> dict[str, Any]:
+        return overlay_params(DEFAULT_CONFIG)
 
     @classmethod
     def load(cls, artifact_dir: Path | str, feature_store_path: Path | str) -> "InferenceRuntime":
@@ -212,33 +218,35 @@ class InferenceRuntime:
             level = max(level - 1, 0)
         return {0: "Low", 1: "Medium", 2: "High"}[level]
 
-    def _incident_overlay_map(self) -> dict[str, tuple[int, float]]:
+    def _incident_overlay_map(self, now: datetime | None = None) -> dict[str, tuple[float, int]]:
+        scored_at = now or datetime.now(timezone.utc)
         with self._lock:
             snapshot = tuple(self._active_incidents.values())
-        totals: dict[str, tuple[int, float]] = {}
-        for cell_id, kind in snapshot:
-            count, points = totals.get(cell_id, (0, 0.0))
-            points += CRASH_OVERLAY_POINTS if kind == "crash" else NEAR_MISS_OVERLAY_POINTS
-            totals[cell_id] = (count + 1, min(points, 100.0))
-        return totals
+        items = ({"cell_id": cell_id, "kind": kind, "status": status, "occurred_at": occurred_at}
+                 for cell_id, kind, status, occurred_at in snapshot)
+        return aggregate(items, scored_at)
 
-    def _incident_overlay(self, cell_id: str) -> tuple[int, float]:
-        return self._incident_overlay_map().get(cell_id, (0, 0.0))
+    def _incident_overlay(self, cell_id: str, now: datetime | None = None) -> tuple[int, float]:
+        points, count = self._incident_overlay_map(now).get(cell_id, (0.0, 0))
+        return count, points
 
-    def decorate_prediction(self, prediction: dict[str, Any]) -> dict[str, Any]:
+    def decorate_prediction(self, prediction: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         """Refresh only the incident overlay without rerunning model inference or SHAP."""
         result = dict(prediction)
-        count, points = self._incident_overlay(str(result["cell_id"]))
+        scored_at = now or datetime.now(timezone.utc)
+        count, points = self._incident_overlay(str(result["cell_id"]), scored_at)
         result["active_incident_count"] = count
         result["incident_overlay_points"] = points
         result["live_risk_score"] = min(100.0, float(result["risk_score"]) + points)
+        result["overlay_params"] = overlay_params()
         return result
 
     def _serialize_prediction(self, cell_id: str, frame: pd.DataFrame, probabilities: np.ndarray,
-                              disagreement: float, include_shap: bool) -> dict[str, Any]:
+                              disagreement: float, include_shap: bool,
+                              now: datetime | None = None) -> dict[str, Any]:
         probability = float(probabilities.mean())
         risk_score = self._rank_score(probability, self.probability_reference)
-        incident_count, overlay_points = self._incident_overlay(cell_id)
+        incident_count, overlay_points = self._incident_overlay(cell_id, now)
         output: dict[str, Any] = {
             "cell_id": cell_id,
             "risk_probability": probability,
@@ -248,6 +256,7 @@ class InferenceRuntime:
             "active_incident_count": incident_count,
             "incident_overlay_points": overlay_points,
             "shap_contributors": [],
+            "overlay_params": overlay_params(),
         }
         if include_shap:
             values = self.explainer.shap_values(frame[self.feature_names])
@@ -271,18 +280,22 @@ class InferenceRuntime:
             ]
         return output
 
-    def predict(self, cell_id: str, overrides: Any | None = None, include_shap: bool = True) -> dict[str, Any]:
+    def predict(self, cell_id: str, overrides: Any | None = None, include_shap: bool = True,
+                *, now: datetime | None = None) -> dict[str, Any]:
         frame = self._apply_overrides(self.features.loc[[cell_id]], overrides)
+        scored_at = now or datetime.now(timezone.utc)
         try:
             member_probs = np.asarray([m.predict_proba(frame[self.feature_names])[0, 1] for m in self.models], dtype=float)
             if not np.isfinite(member_probs).all():
                 raise ValueError("Model returned a non-finite probability.")
-            return self._serialize_prediction(cell_id, frame, member_probs, float(member_probs.std()), include_shap)
+            return self._serialize_prediction(cell_id, frame, member_probs, float(member_probs.std()), include_shap, scored_at)
         except Exception as exc:
             raise MLRuntimeError(f"Live prediction failed: {exc}") from exc
 
-    def predict_batch(self, cell_ids: Iterable[str], overrides: Any | None = None) -> list[dict[str, Any]]:
+    def predict_batch(self, cell_ids: Iterable[str], overrides: Any | None = None,
+                      *, now: datetime | None = None) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(cell_ids))
+        scored_at = now or datetime.now(timezone.utc)
         unknown = [cid for cid in ids if cid not in self._cell_positions]
         if unknown:
             raise KeyError(unknown[0])
@@ -292,11 +305,11 @@ class InferenceRuntime:
             probability_values = probabilities[positions].tolist()
             risk_values = risk_scores[positions].tolist()
             confidence_values = [confidence[i] for i in positions]
-            overlays = self._incident_overlay_map()
+            overlays = self._incident_overlay_map(scored_at)
             incident_counts: list[int] = []
             overlay_points: list[float] = []
             for cell_id in ids:
-                count, points = overlays.get(cell_id, (0, 0.0))
+                points, count = overlays.get(cell_id, (0.0, 0))
                 incident_counts.append(count)
                 overlay_points.append(points)
             live_values = [min(100.0, risk + points) for risk, points in zip(risk_values, overlay_points)]
@@ -312,18 +325,68 @@ class InferenceRuntime:
         except Exception as exc:
             raise MLRuntimeError(f"Batch prediction failed: {exc}") from exc
 
-    def activate_incident(self, incident_id: int, cell_id: str, kind: str) -> None:
+    def activate_incident(self, incident_id: int, cell_id: str, kind: str, *,
+                          status: str = "pending", occurred_at: datetime | None = None) -> None:
+        incident_time = occurred_at or datetime.now(timezone.utc)
         with self._lock:
-            self._active_incidents[int(incident_id)] = (cell_id, kind)
+            self._active_incidents[int(incident_id)] = (cell_id, kind, status, incident_time)
+
+    def update_incident_status(self, incident_id: int, status: str) -> None:
+        with self._lock:
+            current = self._active_incidents.get(int(incident_id))
+            if current is None:
+                return
+            if status == "rejected":
+                del self._active_incidents[int(incident_id)]
+                return
+            cell_id, kind, _old_status, occurred_at = current
+            self._active_incidents[int(incident_id)] = (cell_id, kind, status, occurred_at)
 
     def reject_incident(self, incident_id: int) -> None:
-        with self._lock:
-            self._active_incidents.pop(int(incident_id), None)
+        self.update_incident_status(incident_id, "rejected")
 
-    def hydrate_incidents(self, rows: Iterable[Any]) -> None:
+    def active_incident_cell_ids(self) -> list[str]:
+        """Return unique cells with at least one active report for snapshot hydration."""
+        with self._lock:
+            return list(dict.fromkeys(
+                cell_id for cell_id, _kind, status, _occurred_at in self._active_incidents.values()
+                if status in ACTIVE_INCIDENT_STATUSES
+                if cell_id in self._cell_positions
+            ))
+
+    def hydrate_incidents(self, rows: Iterable[Any], *, now: datetime | None = None) -> None:
+        hydrated_at = now or datetime.now(timezone.utc)
         with self._lock:
             self._active_incidents = {
-                int(row.id): (row.cell_id, row.kind)
+                int(row.id): (row.cell_id, row.kind, row.status, row.occurred_at)
                 for row in rows
                 if row.status in ACTIVE_INCIDENT_STATUSES
+                and effective_points(row.kind, row.status, row.occurred_at, hydrated_at) > 0
             }
+            current = aggregate(({"cell_id": cell, "kind": kind, "status": status, "occurred_at": occurred}
+                                 for cell, kind, status, occurred in self._active_incidents.values()), hydrated_at)
+            self._last_published_overlay_points = {cell: points for cell, (points, _count) in current.items()}
+
+    def mark_overlay_published(self, cell_id: str, points: float) -> None:
+        with self._lock:
+            self._last_published_overlay_points[cell_id] = float(points)
+
+    def sweep_incidents(self, now: datetime | None = None) -> list[str]:
+        """Expire stale reports and return cells whose published score needs an SSE refresh."""
+        scored_at = now or datetime.now(timezone.utc)
+        with self._lock:
+            expired = [incident_id for incident_id, (_cell, kind, status, occurred)
+                       in self._active_incidents.items()
+                       if effective_points(kind, status, occurred, scored_at) <= 0]
+            for incident_id in expired:
+                self._active_incidents.pop(incident_id, None)
+            current = aggregate(({"cell_id": cell, "kind": kind, "status": status, "occurred_at": occurred}
+                                 for cell, kind, status, occurred in self._active_incidents.values()), scored_at)
+            points_by_cell = {cell: points for cell, (points, _count) in current.items()}
+            changed: list[str] = []
+            for cell_id in set(self._last_published_overlay_points) | set(points_by_cell):
+                previous = self._last_published_overlay_points.get(cell_id, 0.0)
+                current_points = points_by_cell.get(cell_id, 0.0)
+                if abs(current_points - previous) >= SWEEP_PUBLISH_DELTA or (previous > 0 and current_points == 0):
+                    changed.append(cell_id)
+            return sorted(changed)

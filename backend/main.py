@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,16 +20,59 @@ from .config_loader import get_effects
 from .db import DB_PATH, IS_SQLITE, SessionLocal, configure_sqlite, engine, validate_postgres_schema
 from .localities import ensure_locality_indexes
 from .ml_runtime import ACTIVE_INCIDENT_STATUSES, InferenceRuntime
+from .realtime import Broadcaster
+from .realtime import utc_iso
+from .realtime_config import SWEEP_SECONDS
 from .models_ops import IncidentReport, create_ops_tables
 from .storage import validate_storage_configuration
-from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, measures, places, regions, reports, system,
+from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, measures, places, realtime, regions, reports, system,
                      predict, validation, whatif)
 
 log = logging.getLogger("waymark")
 
 
+async def _sweep_incident_overlays(app: FastAPI, broadcaster: Broadcaster, now=None) -> int:
+    """Publish only cells whose decay changed enough (or reached zero)."""
+    runtime = getattr(app.state, "ml_runtime", None)
+    if runtime is None:
+        return 0
+    cell_ids = await run_in_threadpool(runtime.sweep_incidents, now=now)
+    published = 0
+    for cell_id in cell_ids:
+        try:
+            prediction = await run_in_threadpool(runtime.predict, cell_id, None, False, now=now)
+            payload = {
+                "cell_id": cell_id,
+                "risk_score": prediction["risk_score"],
+                "live_risk_score": prediction["live_risk_score"],
+                "active_incident_count": prediction["active_incident_count"],
+                "incident_overlay_points": prediction["incident_overlay_points"],
+                "scored_at": utc_iso(),
+            }
+            if broadcaster.publish("prediction.updated", payload):
+                runtime.mark_overlay_published(cell_id, prediction["incident_overlay_points"])
+                published += 1
+        except Exception:
+            log.warning("Could not sweep incident overlay for cell %s", cell_id, exc_info=True)
+    return published
+
+
+async def _incident_overlay_sweeper(app: FastAPI, broadcaster: Broadcaster):
+    """Periodic, cancellable task with no per-cell event storm."""
+    try:
+        while True:
+            await asyncio.sleep(SWEEP_SECONDS)
+            await _sweep_incident_overlays(app, broadcaster)
+    except asyncio.CancelledError:
+        raise
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    broadcaster = getattr(app.state, "broadcaster", None)
+    if broadcaster is None:
+        broadcaster = Broadcaster()
+        app.state.broadcaster = broadcaster
     get_effects()                                  # refuse to start on a malformed effects.json
     validate_storage_configuration()
     database_ready = False
@@ -55,7 +99,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         # Keep non-inference APIs available; prediction routes return 503 while ML is unavailable.
         log.exception("Live inference is unavailable; check model artifacts and feature store")
-    yield
+    await broadcaster.start()
+    sweeper_task = asyncio.create_task(_incident_overlay_sweeper(app, broadcaster), name="waymark-incident-sweeper")
+    try:
+        yield
+    finally:
+        sweeper_task.cancel()
+        try:
+            await sweeper_task
+        except asyncio.CancelledError:
+            pass
+        await broadcaster.stop()
 
 
 app = FastAPI(title="WAYMARK API", version="2.0.0", lifespan=lifespan,
@@ -63,14 +117,15 @@ app = FastAPI(title="WAYMARK API", version="2.0.0", lifespan=lifespan,
                           "tracked measures with photo evidence and a verified-only adjusted risk estimate. "
                           "Decision support only; human experts decide.")
 app.state.ml_runtime = None
+app.state.broadcaster = Broadcaster()
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)   # the full cell list is ~1.6 MB of JSON
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-                   allow_headers=["Authorization", "Content-Type"])
+                   allow_headers=["Authorization", "Content-Type", "Last-Event-ID"])
 
 for r in (system.router, cells.router, crashes.router, incidents.router, predict.router, places.router, whatif.router, validation.router, audit.router,
-          auth.router, regions.router, reports.router, measures.router, evidence.router, chat.router):
+          auth.router, regions.router, reports.router, measures.router, evidence.router, chat.router, realtime.router):
     app.include_router(r)
 
 

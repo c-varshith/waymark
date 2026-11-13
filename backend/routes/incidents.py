@@ -16,6 +16,7 @@ from ..db import get_db
 from ..models import Cell
 from ..models_ops import IncidentReport, utcnow
 from ..ml_runtime import InferenceRuntime, MLRuntimeError
+from ..realtime import utc_iso
 from ..permissions import require_permission
 from ..schemas import (IncidentReportIn, IncidentReportList, IncidentReportOut,
                        IncidentReviewIn, LiveIncidentResponse)
@@ -36,6 +37,39 @@ def _out(row: IncidentReport) -> IncidentReportOut:
 
 def _runtime(request: Request) -> InferenceRuntime | None:
     return getattr(request.app.state, "ml_runtime", None)
+
+
+def _publish_best_effort(request: Request, runtime: InferenceRuntime, event: str, payload: dict,
+                         cell_id: str) -> None:
+    """Publish public, cell-level updates without making the report depend on SSE."""
+    broadcaster = getattr(request.app.state, "broadcaster", None)
+    if broadcaster is None:
+        return
+    try:
+        if event == "incident.created":
+            broadcaster.publish(event, payload)
+        elif event == "incident.reviewed":
+            broadcaster.publish(event, payload)
+    except Exception:
+        log.warning("Could not publish %s for cell %s", event, cell_id, exc_info=True)
+    try:
+        prediction = runtime.predict(cell_id, include_shap=False)
+        update = {
+            "cell_id": cell_id,
+            "risk_score": prediction["risk_score"],
+            "live_risk_score": prediction["live_risk_score"],
+            "active_incident_count": prediction["active_incident_count"],
+            "incident_overlay_points": prediction["incident_overlay_points"],
+            "scored_at": prediction.get("scored_at") or utc_iso(),
+        }
+    except Exception:
+        log.warning("Could not score live incident update for cell %s", cell_id, exc_info=True)
+        return
+    try:
+        if broadcaster.publish("prediction.updated", update):
+            runtime.mark_overlay_published(cell_id, float(update["incident_overlay_points"]))
+    except Exception:
+        log.warning("Could not publish prediction update for cell %s", cell_id, exc_info=True)
 
 
 def _cell_id_for_report(db: Session, body: IncidentReportIn) -> str:
@@ -70,7 +104,10 @@ def create_incident(body: IncidentReportIn, request: Request, db: Session = Depe
     row = _save_report(db, body, cell_id, user)
     runtime = _runtime(request) if request is not None else None
     if runtime is not None:
-        runtime.activate_incident(row.id, cell_id, row.kind)
+        runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at)
+        _publish_best_effort(request, runtime, "incident.created", {
+            "cell_id": cell_id, "kind": row.kind, "at": iso_req(row.created_at),
+        }, cell_id)
     return _out(row)
 
 
@@ -116,7 +153,10 @@ async def create_live_incident(body: IncidentReportIn, request: Request, db: Ses
         else:
             log.exception("Unexpected incident live scoring failure")
         raise HTTPException(503, "Live inference failed. The incident was not submitted.") from None
-    runtime.activate_incident(row.id, cell_id, row.kind)
+    runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at)
+    _publish_best_effort(request, runtime, "incident.created", {
+        "cell_id": cell_id, "kind": row.kind, "at": iso_req(row.created_at),
+    }, cell_id)
     prediction = runtime.decorate_prediction(prediction)
     return LiveIncidentResponse(incident=_out(row), prediction=prediction)
 
@@ -160,15 +200,31 @@ def review_incident(incident_id: int, body: IncidentReviewIn, request: Request,
         raise HTTPException(403, "You cannot review your own incident report.")
     if body.decision == "reject" and not (body.note or "").strip():
         raise HTTPException(422, "Add a reason when rejecting a report.")
+    runtime = _runtime(request) if request is not None else None
+    score_before = None
+    if runtime is not None:
+        try:
+            score_before = runtime.predict(row.cell_id, include_shap=False)["live_risk_score"]
+        except Exception:
+            log.warning("Could not score incident cell before review", exc_info=True)
     row.status = "confirmed" if body.decision == "confirm" else "rejected"
     row.reviewed_by = user.id
     row.review_note = (body.note or "").strip() or None
     row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
-    if row.status == "rejected" and request is not None:
-        runtime = _runtime(request)
-        if runtime is not None:
-            runtime.reject_incident(row.id)
-    return _out(row)
+    score_after = None
+    if runtime is not None:
+        runtime.update_incident_status(row.id, row.status)
+        try:
+            score_after = runtime.predict(row.cell_id, include_shap=False)["live_risk_score"]
+        except Exception:
+            log.warning("Could not score incident cell after review", exc_info=True)
+        _publish_best_effort(request, runtime, "incident.reviewed", {
+            "cell_id": row.cell_id, "decision": body.decision, "at": iso_req(row.updated_at),
+        }, row.cell_id)
+    output = _out(row)
+    output.live_score_before = score_before
+    output.live_score_after = score_after
+    return output
 

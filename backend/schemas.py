@@ -108,6 +108,7 @@ class PredictionResponse(BaseModel):
     confidence: str
     active_incident_count: int
     incident_overlay_points: float
+    overlay_params: dict[str, object] = Field(default_factory=dict)
     shap_contributors: list[ShapItem] = Field(default_factory=list)
 
 
@@ -130,6 +131,7 @@ class BatchPredictionResponse(BaseModel):
     scored_at: Optional[str] = None
     context_source: Optional[Literal["baseline", "scenario", "live"]] = None
     stale_after_seconds: Optional[int] = None
+    overlay_params: dict[str, object] = Field(default_factory=dict)
 
 
 class CellDetail(BaseModel):
@@ -317,6 +319,8 @@ class IncidentReportOut(BaseModel):
     status: Literal["pending", "confirmed", "rejected"]
     review_note: Optional[str] = None
     created_at: str
+    live_score_before: Optional[float] = None
+    live_score_after: Optional[float] = None
 
 
 class IncidentReportList(BaseModel):

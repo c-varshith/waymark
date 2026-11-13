@@ -239,6 +239,70 @@ export const getBlob = async (path: string, signal?: AbortSignal): Promise<Blob>
 
 const SSE_TYPES = ['start', 'token', 'card', 'done', 'error']
 
+export interface ServerEvent {
+  id: number | null
+  event: string
+  data: Record<string, unknown>
+}
+
+/** GET + ReadableStream client for server-pushed events. Leaves the chat POST SSE API unchanged. */
+export async function openEventStream(
+  path: string,
+  onEvent: (event: ServerEvent) => void,
+  options: { signal?: AbortSignal; lastEventId?: number | null; allowedEvents?: readonly string[] },
+): Promise<void> {
+  const allowedEvents = options.allowedEvents ?? SSE_TYPES
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  if (authToken) headers.Authorization = `Bearer ${authToken}`
+  if (options.lastEventId != null) headers['Last-Event-ID'] = String(options.lastEventId)
+  let response: Response
+  try {
+    response = await fetch(buildUrl(path), { method: 'GET', headers, signal: options.signal, cache: 'no-store' })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new ApiError(NETWORK_MESSAGE, 0)
+  }
+  if (!response.ok) throw await errorFromResponse(response)
+  if (!response.body) throw new ApiError('The live update stream did not provide a readable body.', 502)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const parse = (block: string) => {
+    let id: number | null = null
+    let event = 'message'
+    let data = ''
+    for (const line of block.split('\n')) {
+      if (line.startsWith(':')) continue
+      if (line.startsWith('id:')) {
+        const value = Number(line.slice(3).trim())
+        if (Number.isSafeInteger(value)) id = value
+      } else if (line.startsWith('event:')) event = line.slice(6).trim()
+      else if (line.startsWith('data:')) data += `${data ? '\n' : ''}${line.slice(5).trimStart()}`
+    }
+    if (!data || !allowedEvents.includes(event)) return
+    try {
+      const parsed: unknown = JSON.parse(data)
+      if (isRec(parsed)) onEvent({ id, event, data: parsed })
+    } catch { /* malformed event frames are ignored */ }
+  }
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        parse(buffer.slice(0, boundary))
+        buffer = buffer.slice(boundary + 2)
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+    if (buffer.trim()) parse(buffer)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 /** Parses one text/event-stream block into an event. Unknown or malformed events are skipped. */
 function parseSseBlock(block: string): ChatEvent | null {
   let data = ''
@@ -330,6 +394,22 @@ export interface CellLite {
   measures: CellMeasureBrief[]
 }
 
+export interface LiveOverlay {
+  cell_id: string
+  risk_score: number
+  live_risk_score: number
+  active_incident_count: number
+  incident_overlay_points: number
+}
+
+export interface LiveSnapshot {
+  version: number
+  scored_at: string
+  model_version: string | null
+  context_source: string
+  overlays: LiveOverlay[]
+}
+
 export interface ShapRow {
   feature: string
   feature_value: number | string | null
@@ -384,6 +464,11 @@ export interface LivePrediction {
   confidence: Confidence
   active_incident_count: number
   incident_overlay_points: number
+  overlay_params?: {
+    half_life_minutes: number
+    status_weights: Record<string, number>
+    min_effective_points: number
+  }
   shap_contributors: Array<{
     feature: string
     label: string
@@ -397,6 +482,11 @@ export interface LivePrediction {
 export interface LiveIncidentResponse {
   incident: IncidentReport
   prediction: LivePrediction
+}
+
+export interface IncidentReviewResponse extends IncidentReport {
+  live_score_before: number | null
+  live_score_after: number | null
 }
 
 export type CheckStatus = 'PASS' | 'WARN' | 'FAIL'
@@ -600,6 +690,15 @@ function toLivePrediction(raw: unknown): LivePrediction {
     confidence: str(raw.confidence, 'Low') as Confidence,
     active_incident_count: num(raw.active_incident_count) ?? 0,
     incident_overlay_points: num(raw.incident_overlay_points) ?? 0,
+    overlay_params: isRec(raw.overlay_params) ? {
+      half_life_minutes: num(raw.overlay_params.half_life_minutes) ?? 120,
+      status_weights: isRec(raw.overlay_params.status_weights)
+        ? Object.fromEntries(Object.entries(raw.overlay_params.status_weights).flatMap(([key, value]) => {
+            const parsed = num(value)
+            return parsed === null ? [] : [[key, parsed]]
+          })) : {},
+      min_effective_points: num(raw.overlay_params.min_effective_points) ?? 1,
+    } : undefined,
     shap_contributors: contributors,
   }
 }
@@ -608,6 +707,13 @@ export function parseLiveIncidentResponse(raw: unknown): LiveIncidentResponse {
   if (!isRec(raw) || !isRec(raw.incident)) throw new ApiError('The server sent an unexpected live incident response.', 502)
   const incident = toIncidentReport(raw.incident)
   return { incident, prediction: toLivePrediction(raw.prediction) }
+}
+
+export function parseIncidentReviewResponse(raw: unknown): IncidentReviewResponse {
+  if (!isRec(raw)) throw new ApiError('The server sent an unexpected incident review response.', 502)
+  const incident = toIncidentReport(raw)
+  const obj: Rec = raw
+  return { ...incident, live_score_before: num(obj.live_score_before), live_score_after: num(obj.live_score_after) }
 }
 
 function toValidation(raw: unknown): Validation {
@@ -758,6 +864,21 @@ export interface PlaceSearchItem {
 }
 
 export const api = {
+  liveSnapshot: async (signal?: AbortSignal): Promise<LiveSnapshot> => {
+    const raw = await getJson('/api/live/snapshot', undefined, signal)
+    const obj = isRec(raw) ? raw : {}
+    const overlays = unwrapList(obj.overlays, ['overlays']).flatMap((o) => {
+      const id = str(o.cell_id)
+      const risk = num(o.risk_score)
+      const live = num(o.live_risk_score)
+      const count = num(o.active_incident_count)
+      const points = num(o.incident_overlay_points)
+      return id && risk !== null && live !== null && count !== null && points !== null
+        ? [{ cell_id: id, risk_score: risk, live_risk_score: live, active_incident_count: count, incident_overlay_points: points }]
+        : []
+    })
+    return { version: num(obj.version) ?? 0, scored_at: str(obj.scored_at), model_version: obj.model_version == null ? null : str(obj.model_version), context_source: str(obj.context_source), overlays }
+  },
   /** Real crash points inside a map view; bbox = south,west,north,east. */
   crashes: async (bbox: string, signal?: AbortSignal): Promise<CrashResult> => {
     const raw = await getJson('/api/crashes', { bbox, limit: 3000 }, signal)

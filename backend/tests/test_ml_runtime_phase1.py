@@ -53,7 +53,7 @@ def test_cached_full_city_batch_is_three_times_faster_and_incident_is_live(packa
     packaged_runtime.reject_incident(987654321)
     assert first >= second * 3
     assert after[0]["risk_score"] == before[0]["risk_score"]
-    assert after[0]["live_risk_score"] == min(100, before[0]["risk_score"] + 20)
+    assert after[0]["live_risk_score"] == pytest.approx(min(100, before[0]["risk_score"] + 12))
     assert after[0]["active_incident_count"] == before[0]["active_incident_count"] + 1
     assert len(packaged_runtime._score_cache) <= 8
 
