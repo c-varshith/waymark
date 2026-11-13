@@ -1,0 +1,72 @@
+# -----------------------------------------------------------------------------
+# Local secrets and environment files
+# Keep the example templates tracked; never commit real credentials.
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# -----------------------------------------------------------------------------
+# Python environments, bytecode, test output, and tooling caches
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# -----------------------------------------------------------------------------
+# JavaScript dependencies, build output, and local tooling state
+# -----------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+.vercel/
+
+# -----------------------------------------------------------------------------
+# Local application data and generated runtime artifacts
+# SQLite files may contain accounts, reports, chats, incidents, or evidence refs.
+# Runtime uploads/reports belong in data/ and should not be committed.
+# -----------------------------------------------------------------------------
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.before_advice
+/data/
+
+# -----------------------------------------------------------------------------
+# Temporary exports and machine-generated handoff files
+# Keep authored documentation (including docs/CHANGELOG-realtime.md) tracked.
+# Keep out/ tracked: the feature store and exports are used by the demo/pipeline.
+# -----------------------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+*.bak
+*~
+modified_files.diff
+*.zip
+
+# Local Supabase CLI state. Keep supabase/config.toml, schema.sql, and migrations.
+/supabase/.temp/
+/supabase/.branches/
+
+# Large presentation assets are not used by the application bundle.
+/files/
+
+# Operating system files
+.DS_Store
+Thumbs.db

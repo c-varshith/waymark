@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "feature_columns": [
+    "n_acc",
+    "n_recent",
+    "mean_sev",
+    "share_night",
+    "share_rain",
+    "mean_vis",
+    "Junction",
+    "Crossing",
+    "Traffic_Signal",
+    "Stop",
+    "Give_Way",
+    "Railway",
+    "Roundabout",
+    "Bump",
+    "Traffic_Calming",
+    "Station",
+    "Amenity",
+    "nb_acc"
+  ],
+  "feature_count": 18,
+  "h3_resolution": 9,
+  "positive_class_index": 1,
+  "prediction_aggregation": "mean_positive_class_probability",
+  "risk_score": {
+    "field": "risk_score",
+    "scale_min": 0,
+    "scale_max": 100,
+    "meaning": "empirical percentile of positive-class probability against the saved reference distribution",
+    "reference_artifact": "model.pkl:probability_reference",
+    "tie_method": "average_rank",
+    "raw_probability_field": "risk_probability",
+    "calibrated": false
+  },
+  "shap_explainer": {
+    "artifact": "explainer.pkl",
+    "model_member_index": 0
+  }
+}

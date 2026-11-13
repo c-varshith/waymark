@@ -1,0 +1,210 @@
+@import "tailwindcss";
+
+/*
+ * WAYMARK design tokens.
+ * The look borrows from the road itself: asphalt for text and dark surfaces, concrete for the page,
+ * guide-sign green for the header, and lane-marking yellow for the one thing to press.
+ * Token names are historical (navy, ivory, brass) and are kept so existing classes keep working.
+ */
+@theme {
+  --color-navy: #1e2327; /* asphalt */
+  --color-navy-800: #2b3238;
+  --color-navy-deep: #15191c;
+  --color-navy-soft: #323a41;
+  --color-ink: #333b42;
+  --color-ivory: #f4f5f3; /* concrete */
+  --color-ivory-200: #e8eae6;
+  --color-paper: #eceeea;
+  --color-brass: #f5b700; /* lane yellow */
+  --color-brass-soft: #ffd24d;
+  --color-brass-700: #735200; /* yellow dark enough for text on white */
+  --color-sign: #0b6b50; /* guide-sign green */
+  --color-sign-700: #08543f;
+  --color-teal: #2a7f8e;
+  --color-amber: #d98a2b;
+  --color-brick: #b3412f;
+  --color-sun: #e8c547;
+  --color-slate-soft: #8a93a6;
+  --color-steel: #2f5583;
+
+  --font-sans: "Overpass Variable", "Overpass", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Headings use the same family at a heavier weight; the old serif token now points here. */
+  --font-serif: var(--font-sans);
+
+  /* Sign-like corners: small on controls and panels. Pills are reserved for status chips. */
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --radius-2xl: 6px;
+  --radius-3xl: 8px;
+  --radius-card: 6px;
+
+  --shadow-card: 0 0 0 1px rgb(30 35 39 / 0.1), 0 1px 3px rgb(30 35 39 / 0.12);
+  --shadow-lift: 0 0 0 1px rgb(30 35 39 / 0.12), 0 8px 24px -8px rgb(30 35 39 / 0.3);
+}
+
+/* Large, projector-friendly base size */
+html {
+  font-size: 17px;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ivory);
+  color: var(--color-navy);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-sans);
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-sign);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Panels that only receive focus from script (tabindex -1) are not controls, so they get no ring. */
+[tabindex="-1"]:focus-visible {
+  outline: none;
+}
+/* On dark and green surfaces the green ring disappears, so switch to yellow there. */
+.bg-navy :focus-visible,
+.bg-sign :focus-visible,
+.bg-navy:focus-visible,
+.bg-sign:focus-visible {
+  outline-color: var(--color-brass);
+}
+
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 3000;
+  background: var(--color-brass);
+  color: var(--color-navy);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-weight: 700;
+}
+.skip-link:focus {
+  top: 0.75rem;
+}
+
+/* Leaflet tweaks */
+.leaflet-container {
+  font-family: var(--font-sans);
+  background: #e3e5e1;
+}
+.leaflet-tooltip {
+  font-family: var(--font-sans);
+  border-radius: 4px;
+  border: 1px solid rgb(30 35 39 / 0.2);
+  box-shadow: var(--shadow-card);
+  color: var(--color-navy);
+}
+
+.sr-table-wrap {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 640px) {
+  html { font-size: 16px; }
+  body { overflow-x: clip; }
+  input, select, textarea { font-size: 16px; }
+  button, a { touch-action: manipulation; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Action-plan markers on the map (a square badge with a count: shape and number, not colour alone) */
+.wm-marker {
+  background: transparent;
+  border: 0;
+}
+.wm-marker-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  border: 2px solid var(--color-navy);
+  background: var(--color-brass);
+  color: var(--color-navy);
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow: 0 1px 3px rgb(30 35 39 / 0.4);
+}
+.leaflet-marker-icon:focus-visible .wm-marker-badge {
+  outline: 3px solid var(--color-sign);
+  outline-offset: 2px;
+}
+
+/* Sign-in screen: one plain panel on the page background. */
+.auth-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2.5rem 1.25rem;
+  background: var(--color-ivory);
+}
+.auth-card {
+  width: min(100%, 460px);
+  padding: 2rem;
+  border-top: 6px solid var(--color-sign);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: var(--shadow-card);
+}
+.auth-card-top { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
+.auth-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--color-sign);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.auth-back-link:hover { color: var(--color-sign-700); }
+.auth-brand { display: flex; align-items: center; gap: 0.75rem; }
+.auth-mark { display: grid; flex: 0 0 auto; place-items: center; }
+.auth-brand-name { display: block; font-size: 1.15rem; font-weight: 800; letter-spacing: 0.08em; line-height: 1.2; }
+.auth-brand-tagline { display: block; margin-top: 0.15rem; color: rgb(30 35 39 / 0.65); font-size: 0.82rem; }
+.auth-intro { margin-top: 1.75rem; }
+.auth-intro h1 { margin: 0; font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+.auth-intro p { margin: 0.5rem 0 0; color: rgb(30 35 39 / 0.7); line-height: 1.5; }
+.auth-form { display: grid; gap: 0.45rem; margin-top: 1.4rem; }
+.auth-label { margin-top: 0.4rem; font-size: 0.92rem; font-weight: 700; }
+.auth-password-wrap { position: relative; }
+.auth-eye { position: absolute; top: 50%; right: 0.6rem; display: grid; place-items: center; padding: 0.5rem; transform: translateY(-50%); color: rgb(30 35 39 / 0.6); }
+.auth-eye:hover { color: var(--color-navy); }
+.auth-hint { margin: 0.1rem 0 0.4rem; color: rgb(30 35 39 / 0.65); font-size: 0.85rem; line-height: 1.5; }
+.auth-error { margin: 0; border-left: 4px solid var(--color-brick); background: rgb(179 65 47 / 0.08); padding: 0.6rem 0.8rem; color: var(--color-brick); font-size: 0.9rem; font-weight: 600; }
+.auth-submit { display: flex; min-height: 52px; align-items: center; justify-content: center; margin-top: 0.4rem; border: 0; border-radius: 4px; background: var(--color-brass); color: var(--color-navy); font-size: 1rem; font-weight: 800; }
+.auth-submit:not(:disabled):hover { background: var(--color-brass-soft); }
+.auth-submit:disabled { cursor: wait; opacity: 0.7; }
+.auth-switch { margin: 1.25rem 0 0; color: rgb(30 35 39 / 0.7); font-size: 0.94rem; }
+.auth-switch button { color: var(--color-sign); font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
+@media (max-width: 520px) {
+  .auth-screen { padding: 1rem 0.65rem; }
+  .auth-card { padding: 1.5rem 1.15rem; }
+}
