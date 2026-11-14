@@ -469,6 +469,13 @@ export default function MapPage() {
     }
     if (event.event === 'traffic.updated') {
       reloadTraffic()
+      if (mapMode === 'live' && modelHealthQ.data?.traffic_lift_applied) {
+        if (contextRefreshTimer.current !== null) window.clearTimeout(contextRefreshTimer.current)
+        contextRefreshTimer.current = window.setTimeout(() => {
+          contextRefreshTimer.current = null
+          setContextRevision((n) => n + 1)
+        }, 2000)
+      }
       return
     }
     if (event.event === 'prediction.updated' && cellId) {
@@ -516,7 +523,8 @@ export default function MapPage() {
       }, 2000)
       if (selectedId) setIncidentRefreshKey((n) => n + 1)
     }
-  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, reloadLiveContext, reloadTraffic])
+  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, reloadLiveContext, reloadTraffic,
+    mapMode, modelHealthQ.data?.traffic_lift_applied])
   const liveStream = useLiveStream(handleLiveEvent, applyLiveSnapshot)
 
   useEffect(() => {
@@ -783,12 +791,16 @@ export default function MapPage() {
                 <div className="mt-2 space-y-1.5">
                   <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />
                   <p className="px-1 text-[11px] font-bold text-navy/75">
-                    {modelHealthQ.data?.condition_lift_applied ? 'Condition lift affects ranking' : 'Context only, not a validated improvement'}
+                    {modelHealthQ.data?.traffic_lift_applied
+                      ? `Experimental traffic effect applied in Live mode · ${modelHealthQ.data.traffic_lift_verdict ?? 'validated'}`
+                      : modelHealthQ.data?.traffic_lift_loaded
+                        ? `Traffic effect ${modelHealthQ.data.traffic_lift_verdict ?? 'not validated'}; not applied (experimental flag off or validation not passed)`
+                        : 'Traffic context only; no historical traffic lift is loaded'}
                   </p>
                 </div>
               )}
               <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live context works</summary>
-                <p className="pb-1">Live mode shows the latest cached Houston-centre weather conditions and per-cell reasons. By default this is context only, not a validated improvement, and it does not change scores or rankings. Rain associations mean historically more crashes per hour in rain here; they do not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
+                <p className="pb-1">Live mode shows the latest cached Houston-centre weather conditions and per-cell reasons. Weather remains context only. An experimental traffic effect can adjust Live scores only when a historical artifact passes its held-out validation and the server flag is enabled. Live provider readings are not used as training history or persisted. Rain associations mean historically more crashes per hour in rain here; they do not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
               </details>
             </div>
             <div className="shrink-0">
@@ -869,7 +881,7 @@ export default function MapPage() {
             ) : null}
             <div className="ml-auto flex max-w-full flex-wrap items-start justify-end gap-2 *:pointer-events-auto">
               <BaseMapSwitch names={BASE_LAYERS.map((l) => l.name)} value={base.name} onChange={pickBase} />
-              <TrafficControl data={trafficQ.data} loading={trafficQ.loading} on={trafficLayerOn} onToggle={() => setTrafficLayerOn((on) => !on)} />
+              <TrafficControl data={trafficQ.data} loading={trafficQ.loading} on={trafficLayerOn} onToggle={() => setTrafficLayerOn((on) => !on)} affectsScores={modelHealthQ.data?.traffic_lift_applied ?? false} />
               <DriverModeControl
                 enabled={locationAlertsEnabled}
                 onToggle={toggleLocationAlerts}

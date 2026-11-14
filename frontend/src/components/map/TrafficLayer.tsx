@@ -85,7 +85,7 @@ export function TrafficLayer({ data }: { data: LiveTraffic }) {
 }
 
 /** Toggle plus status and an inline colour key, for the map toolbar. */
-export function TrafficControl({ data, on, onToggle, loading }: { data: LiveTraffic | null; on: boolean; onToggle: () => void; loading: boolean }) {
+export function TrafficControl({ data, on, onToggle, loading, affectsScores = false }: { data: LiveTraffic | null; on: boolean; onToggle: () => void; loading: boolean; affectsScores?: boolean }) {
   const drawable = trafficDrawable(data)
   const status = !data
     ? (loading ? 'Checking…' : 'Unavailable')
@@ -99,7 +99,9 @@ export function TrafficControl({ data, on, onToggle, loading }: { data: LiveTraf
       ? (data.error === 'Traffic provider key is not configured'
         ? 'Live traffic needs a TomTom key on the server (WAYMARK_TRAFFIC_API_KEY).'
         : data.error ? `Traffic provider unavailable (${data.error}).` : 'Waiting for the first traffic reading.')
-      : 'Congestion along the streets in view. Display only: it never changes risk scores.'
+      : affectsScores
+        ? 'Experimental: learned congestion effect adjusts scores in Live mode only for cells with fresh readings.'
+        : 'Congestion along the streets in view. Display only: no validated, enabled congestion effect is available, so scores do not change.'
   return (
     <div className="flex items-center gap-1 rounded-full bg-white/95 p-1 shadow-card ring-1 ring-navy/10">
       <button

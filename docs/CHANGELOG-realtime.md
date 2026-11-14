@@ -1,5 +1,13 @@
 # WAYMARK realtime inference changes
 
+## Experimental historical congestion effect (default off)
+
+- Added a traffic-lift training and validation pipeline for separately licensed hourly traffic archives matched to crash history. It learns bounded, per-cell/citywide multipliers and evaluates them on a held-out year with a cell-bootstrap interval.
+- Live inference can use a fresh cached traffic bucket only when the artifact verdict is `PASS` **and** the backend explicitly sets `WAYMARK_TRAFFIC_LIFT=1`. The setting defaults to `false`. The effect is labelled experimental in the API/UI, applies only in Live mode, and does not affect Baseline or What-if scores.
+- TomTom live readings remain memory-only. The `congestion_bucket` history column remains NULL; do not use the live feed to build the historical artifact. No historical traffic data or generated lift artifact is included in this change, so traffic remains display-only until a licensed archive is supplied, validated, and explicitly enabled.
+- The Live map refreshes scores when a traffic update arrives only if the optional effect is enabled. It keeps the existing cached cell grid while doing so.
+- See [traffic_lift.md](traffic_lift.md) for the CSV format, build command, validation gates, and data-source requirements.
+
 ## Task 0: condition lift defaults to context only
 
 - Added `WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING`, defaulting to `false`. Live mode continues to return active condition context and per-cell reasons, while its score and ranking remain unchanged unless explicitly enabled.

@@ -53,6 +53,7 @@ The project is a predictive safety intelligence layer: it is designed to support
 - **Prioritize field work:** search and export the emerging-risk audit list; generate region reports with PDF and JSON downloads.
 - **Track safety measures:** record implementation progress, attach evidence, and request planner review. Adjusted scores and progress projections are illustrative overlays; they do not retrain or rerun the model.
 - **Report incidents:** submit crash or near-miss reports for review. The live inference API returns a separate, capped incident overlay; it does not alter the trained model score.
+- **View live traffic:** display cached TomTom congestion with attribution. An optional experimental congestion adjustment can affect Live scores only when a licensed historical traffic archive passes held-out validation and `WAYMARK_TRAFFIC_LIFT=1` is explicitly enabled; it is off by default and never changes Baseline scores. Live TomTom readings are not stored as training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
 - **Ask questions:** use the optional report-aware assistant for structured suggestions and discussion.
 
 ## Quick start

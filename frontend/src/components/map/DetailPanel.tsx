@@ -143,9 +143,11 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
   const liveAvailable = scoreMode === 'live' && !!livePrediction && livePrediction.context_source === 'live'
   const primaryLabel = scenario
     ? `${scenarioLabel} likelihood (estimate)`
-    : liveAvailable ? 'Live condition-adjusted likelihood'
+    : liveAvailable ? 'Live-adjusted likelihood'
       : scoreMode === 'live' && !livePredictionLoading ? 'Blackspot likelihood (live unavailable)'
         : 'Blackspot likelihood'
+  const adjustmentsApplied = conditionLiftApplied
+    || (livePrediction?.adjustments ?? []).some((a) => typeof a.multiplier === 'number' && a.kind.endsWith('_lift'))
   const primaryValue = scenario ? scenario.scenario : liveAvailable ? livePrediction!.risk_probability : detail?.baseline_prob ?? null
 
   return (
@@ -233,11 +235,11 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
             )}
             {scoreMode === 'live' && livePrediction && (livePrediction.adjustments?.length ?? 0) > 0 && (
               <section aria-label="Live score adjustments" className="rounded-lg border border-teal/30 bg-teal/5 px-3 py-2.5">
-                <h3 className="text-sm font-bold">{conditionLiftApplied ? 'Live score adjustments' : 'Live condition context'}</h3>
+                <h3 className="text-sm font-bold">{adjustmentsApplied ? 'Live score adjustments' : 'Live condition context'}</h3>
                 <p className="mb-1 text-xs text-navy/70">
-                  {conditionLiftApplied
-                    ? 'Condition adjustments are applied after the baseline model score. SHAP factors below explain the baseline model only.'
-                    : 'Condition context only, not a validated improvement; it does not change the score or ranking. Incident overlays are shown separately. SHAP factors below explain the baseline model only.'}
+                  {adjustmentsApplied
+                    ? 'Adjustments with a multiplier are applied after the baseline model score; other factors are context only. Traffic scoring is experimental. SHAP factors below explain the baseline model only.'
+                    : 'Context only, not a validated improvement; it does not change the score or ranking. Incident overlays are shown separately. SHAP factors below explain the baseline model only.'}
                 </p>
                 <ul className="space-y-1.5 text-xs">
                   {livePrediction.adjustments!.map((item, index) => (

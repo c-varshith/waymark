@@ -5,7 +5,7 @@
 - Apply `supabase/migrations/20261114000000_realtime_condition_history_and_traffic_budget.sql` to Supabase before starting the API there. Local SQLite creates these operational tables at startup.
 - Set `WAYMARK_TRAFFIC_API_KEY` in the backend environment only. Do not paste it into a shell transcript, browser, frontend environment, or issue.
 - The local `waymark.db` must have a `crashes` table loaded from the supplied dataset for a road-cluster watch list. If absent, the traffic watch list is empty; use `python pipeline/load_crashes.py --csv US_Accidents_March23.csv --state TX --city Houston --db waymark.db` after confirming the target DB is the local demo database. This loader replaces the local `crashes` table.
-- Traffic remains a separate display layer. No traffic bucket, provider status, or traffic-derived value enters a score or ranking. The API reports `score_effect: false`.
+- Traffic remains a separate display layer by default. No traffic bucket, provider status, or traffic-derived value enters a score or ranking unless the separate experimental historical lift passes its held-out gate and `WAYMARK_TRAFFIC_LIFT=1` is explicitly set. The traffic display API continues to report `score_effect: false`; see [traffic_lift.md](../traffic_lift.md).
 - TomTom's reviewed terms prohibit historical collection/analysis of its live traffic feed. Until written terms clarify this, `condition_snapshots.congestion_bucket` is deliberately NULL; do not enable traffic-bucket logging.
 
 ## API and UI checks

@@ -502,6 +502,10 @@ export interface ModelHealth {
   condition_lift_enabled: boolean
   condition_lift_version: string | null
   condition_lift_applied: boolean
+  traffic_lift_loaded: boolean
+  traffic_lift_version: string | null
+  traffic_lift_verdict: string | null
+  traffic_lift_applied: boolean
 }
 
 export interface PredictionAdjustment {
@@ -521,6 +525,8 @@ export interface LivePrediction {
   stale_after_seconds?: number
   adjustments?: PredictionAdjustment[]
   condition_multiplier?: number
+  traffic_multiplier?: number
+  traffic_bucket?: 'free' | 'moderate' | 'heavy' | null
   active_conditions?: Array<'rain' | 'night' | 'rush'>
   context?: LiveConditionContext | null
   risk_probability: number
@@ -757,6 +763,8 @@ function toLivePrediction(raw: unknown): LivePrediction {
         reason: str(value.reason), source: str(value.source), observed_at: typeof value.observed_at === 'string' ? value.observed_at : null }]
     }) : [],
     condition_multiplier: num(raw.condition_multiplier) ?? 1,
+    traffic_multiplier: num(raw.traffic_multiplier) ?? 1,
+    traffic_bucket: raw.traffic_bucket === 'free' || raw.traffic_bucket === 'moderate' || raw.traffic_bucket === 'heavy' ? raw.traffic_bucket : null,
     active_conditions: Array.isArray(raw.active_conditions) ? raw.active_conditions.filter((v): v is 'rain' | 'night' | 'rush' => v === 'rain' || v === 'night' || v === 'rush') : [],
     risk_probability,
     risk_score,
@@ -993,6 +1001,10 @@ export const api = {
       condition_lift_enabled: bool(raw.condition_lift_enabled),
       condition_lift_version: typeof raw.condition_lift_version === 'string' ? raw.condition_lift_version : null,
       condition_lift_applied: bool(raw.condition_lift_applied),
+      traffic_lift_loaded: bool(raw.traffic_lift_loaded),
+      traffic_lift_version: typeof raw.traffic_lift_version === 'string' ? raw.traffic_lift_version : null,
+      traffic_lift_verdict: typeof raw.traffic_lift_verdict === 'string' ? raw.traffic_lift_verdict : null,
+      traffic_lift_applied: bool(raw.traffic_lift_applied),
     }
   },
 

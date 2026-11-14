@@ -25,6 +25,10 @@ class Health(BaseModel):
     condition_lift_enabled: Optional[bool] = None
     condition_lift_version: Optional[str] = None
     condition_lift_applied: Optional[bool] = None
+    traffic_lift_loaded: Optional[bool] = None
+    traffic_lift_version: Optional[str] = None
+    traffic_lift_verdict: Optional[str] = None
+    traffic_lift_applied: Optional[bool] = None
 
 
 class ModelHealth(BaseModel):
@@ -36,6 +40,10 @@ class ModelHealth(BaseModel):
     condition_lift_enabled: bool = False
     condition_lift_version: Optional[str] = None
     condition_lift_applied: bool = False
+    traffic_lift_loaded: bool = False
+    traffic_lift_version: Optional[str] = None
+    traffic_lift_verdict: Optional[str] = None
+    traffic_lift_applied: bool = False
 
 
 class LiveContext(BaseModel):
@@ -179,6 +187,8 @@ class PredictionResponse(BaseModel):
     overlay_params: dict[str, object] = Field(default_factory=dict)
     adjustments: list[PredictionAdjustment] = Field(default_factory=list)
     condition_multiplier: float = 1.0
+    traffic_multiplier: float = 1.0
+    traffic_bucket: Optional[Literal["free", "moderate", "heavy"]] = None
     active_conditions: list[Literal["rain", "night", "rush"]] = Field(default_factory=list)
     context: Optional[LiveContext] = None
     shap_contributors: list[ShapItem] = Field(default_factory=list)
@@ -194,6 +204,8 @@ class BatchPredictionItem(BaseModel):
     incident_overlay_points: float
     corroboration: dict[str, object] = Field(default_factory=dict)
     condition_multiplier: float = 1.0
+    traffic_multiplier: float = 1.0
+    traffic_bucket: Optional[Literal["free", "moderate", "heavy"]] = None
     shap_contributors: list[ShapItem] = Field(default_factory=list)
 
 

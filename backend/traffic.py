@@ -1,11 +1,16 @@
 """TomTom traffic display: segment cache, flow-tile proxy and request budgets.
 
-Two display paths, both disconnected from model scoring and ranking:
+A separately learned experimental adjustment may consume fresh cached buckets in Live inference
+after explicit opt-in.
+
+Display paths remain separate from scoring. Only the in-memory watched-cell bucket can feed the
+explicitly opted-in experimental Live adjustment:
 
 * Watched segments. The background poller asks TomTom's Flow Segment Data API about the road
-  segment at a few high-risk cells. Raw speeds are used transiently to derive a display bucket and
-  are never cached, logged, or persisted; the segment's road geometry is kept in memory so the
-  map can draw the congestion along the street rather than as a dot.
+  segment at a few high-risk cells. Raw speeds are used transiently to derive a bucket and are
+  never cached, logged, or persisted; the bucket and segment geometry remain in process memory.
+  The bucket can affect Live inference only when a separately trained historical lift passes
+  validation and the experimental operator flag is enabled. No provider reading is persisted.
 * Street network. ``TrafficTileProxy`` relays TomTom raster flow tiles so every street in view is
   coloured by congestion. The key stays on the server; tiles are cached briefly and counted
   against a daily tile cap.
@@ -256,6 +261,8 @@ class TrafficManager:
             if cid not in points and cell is not None and cell.lat is not None and cell.lng is not None:
                 points[cid] = (float(cell.lat), float(cell.lng))
         active_order = {cid: index for index, cid in enumerate(active)}
+        lift = getattr(runtime, "traffic_lift", None)
+        sensitive = lift.sensitive_cells() if lift is not None and lift.applied else set()
         self.candidates = []
         for cid in ids:
             cell = cells_by_id.get(cid)
@@ -263,6 +270,8 @@ class TrafficManager:
             if cell is None or point is None:
                 continue
             score = float(cell.risk_score or 0)
+            if cid in sensitive:
+                score += 200.0  # Prioritise cells where an experimental effect needs a fresh reading.
             if cid in active_order:
                 score += 1000.0 - active_order[cid]
             self.candidates.append((cid, score, point[0], point[1]))
@@ -331,6 +340,13 @@ class TrafficManager:
             "error": self._last_error,
             "tiles": tile_proxy_info(self.provider),
         }
+
+    def live_readings(self) -> dict[str, dict[str, Any]]:
+        """Return only fresh per-cell buckets and timestamps for Live inference; never speeds."""
+        now = self.clock()
+        fresh = timedelta(minutes=config.TRAFFIC_FRESH_MINUTES)
+        return {cid: {"bucket": row["bucket"], "observed_at": row["observed_at"]}
+                for cid, row in list(self.readings.items()) if now - row["_observed_dt"] <= fresh}
 
     async def _reserve(self) -> bool:
         allowed, day, month = await run_in_threadpool(_reserve_request_sync, self.clock())

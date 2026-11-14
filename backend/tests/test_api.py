@@ -120,4 +120,6 @@ def test_health(client):
         "model_loaded": False,
         "condition_lift_enabled": False,
         "condition_lift_applied": False,
+        "traffic_lift_loaded": False,
+        "traffic_lift_applied": False,
     }

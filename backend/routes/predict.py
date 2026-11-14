@@ -43,6 +43,16 @@ def _live_context(request: Request) -> dict[str, object]:
     return context
 
 
+def _traffic_readings(request: Request) -> dict[str, dict[str, object]]:
+    """Read fresh cached buckets only; a traffic failure must not break inference."""
+    manager = getattr(request.app.state, "traffic_manager", None)
+    try:
+        return manager.live_readings() if manager is not None else {}
+    except Exception:
+        log.warning("Live traffic readings unavailable for scoring", exc_info=True)
+        return {}
+
+
 def _has_overrides(overrides) -> bool:
     return any(value is not None for value in overrides.model_dump().values())
 
@@ -64,7 +74,8 @@ async def predict(body: PredictRequest, request: Request, response: Response = N
             runtime.predict, cell_id, body.overrides,
             active_conditions=active_conditions,
             condition_source="Open-Meteo current conditions" if context else "historical Open-Meteo archive",
-            condition_observed_at=context.get("observed_at") if context else None)
+            condition_observed_at=context.get("observed_at") if context else None,
+            traffic_readings=_traffic_readings(request) if context else None)
         elapsed_ms = (perf_counter() - started) * 1000
         if response is not None:
             response.headers["Server-Timing"] = f"infer;dur={elapsed_ms:.3f}"
@@ -94,7 +105,8 @@ async def predict_batch(body: BatchPredictRequest, request: Request, response: R
         started = perf_counter()
         items = await run_in_threadpool(
             runtime.predict_batch, body.cell_ids, body.overrides,
-            active_conditions=active_conditions)
+            active_conditions=active_conditions,
+            traffic_readings=_traffic_readings(request) if context else None)
         elapsed_ms = (perf_counter() - started) * 1000
         if response is not None:
             response.headers["Server-Timing"] = f"infer;dur={elapsed_ms:.3f}"

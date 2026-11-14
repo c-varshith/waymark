@@ -20,6 +20,7 @@ from .services import FEATURE_LABELS
 from .incident_overlay import DEFAULT_CONFIG, aggregate_details, effective_points, overlay_params
 from .realtime_config import SWEEP_PUBLISH_DELTA
 from . import realtime_config as config
+from .traffic_lift import TrafficLift
 
 MAX_SHAP_CONTRIBUTORS = 6
 ACTIVE_INCIDENT_STATUSES = frozenset({"pending", "confirmed"})
@@ -60,6 +61,7 @@ class InferenceRuntime:
         self.condition_lift_version: str | None = None
         self.condition_citywide: dict[str, dict[str, float]] = {}
         self.condition_lift_cells: dict[str, dict[str, Any]] = {}
+        self.traffic_lift: TrafficLift | None = None
         self._condition_multiplier_vectors = {name: np.ones(len(features), dtype=float) for name in CONDITIONS}
         if condition_lift is not None:
             self._load_condition_lift(condition_lift, condition_lift_version)
@@ -147,6 +149,7 @@ class InferenceRuntime:
         runtime = cls(bundle, schema, explainer, frame, disagreement_threshold,
                       lift_document, lift_version)
         runtime.model_version = "lgbm3-" + hashlib.sha256(model_path.read_bytes()).hexdigest()[:8]
+        runtime.traffic_lift = TrafficLift.load(artifact_dir / "traffic_lift.json")
         return runtime
 
     def _load_condition_lift(self, document: dict[str, Any], version: str | None) -> None:
@@ -261,6 +264,22 @@ class InferenceRuntime:
                 multiplier *= min(config.LIFT_CAP_PER_CONDITION, float(row.get("multiplier", 1.0)))
         return min(multiplier, config.LIFT_CAP_TOTAL)
 
+    def _traffic_effect(self, cell_id: str, readings: dict[str, dict[str, Any]] | None
+                        ) -> tuple[float, str | None, dict[str, Any] | None]:
+        """Return an experimental learned multiplier and its transparent explanation."""
+        reading = (readings or {}).get(cell_id)
+        if not reading or reading.get("bucket") not in ("free", "moderate", "heavy"):
+            return 1.0, None, None
+        if self.traffic_lift is None:
+            return 1.0, reading["bucket"], {
+                "kind": "traffic_context",
+                "reason": (f"Traffic here is {reading['bucket']} now. No learned congestion effect is loaded; "
+                           "the score is unchanged."),
+                "source": "Live traffic (TomTom)", "observed_at": reading.get("observed_at"),
+            }
+        multiplier, explanation = self.traffic_lift.adjustment(cell_id, reading)
+        return multiplier, reading["bucket"], explanation
+
     def _model_scores(self, overrides: Any | None,
                       active_conditions: Iterable[str] | None = None
                       ) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
@@ -339,12 +358,16 @@ class InferenceRuntime:
                               active_conditions: tuple[str, ...] = (),
                               condition_source: str = "historical Open-Meteo archive",
                               condition_observed_at: str | None = None,
-                              condition_multiplier: float = 1.0) -> dict[str, Any]:
+                              condition_multiplier: float = 1.0,
+                              traffic: tuple[float, str | None, dict[str, Any] | None] = (1.0, None, None)
+                              ) -> dict[str, Any]:
         probability = float(probabilities.mean())
         risk_score = self._rank_score(probability, self.probability_reference)
         incident_count, overlay_points, independent_reporters, corroboration_bonus = self._incident_overlay(cell_id, now)
         adjustments = self._condition_adjustments(
             cell_id, active_conditions, condition_source, condition_observed_at)
+        if traffic[2] is not None:
+            adjustments.append(traffic[2])
         if overlay_points > 0:
             adjustments.append({
                 "kind": "incident_overlay",
@@ -368,6 +391,8 @@ class InferenceRuntime:
                               "independent_reporters": independent_reporters,
                               "bonus_points": corroboration_bonus},
             "condition_multiplier": condition_multiplier,
+            "traffic_multiplier": traffic[0],
+            "traffic_bucket": traffic[1],
             "adjustments": adjustments,
             "shap_contributors": [],
             "overlay_params": overlay_params(),
@@ -445,7 +470,8 @@ class InferenceRuntime:
                 *, now: datetime | None = None,
                 active_conditions: Iterable[str] | None = None,
                 condition_source: str = "historical Open-Meteo archive",
-                condition_observed_at: str | None = None) -> dict[str, Any]:
+                condition_observed_at: str | None = None,
+                traffic_readings: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         frame = self._apply_overrides(self.features.loc[[cell_id]], overrides)
         scored_at = now or datetime.now(timezone.utc)
         try:
@@ -454,18 +480,20 @@ class InferenceRuntime:
             if not np.isfinite(member_probs).all():
                 raise ValueError("Model returned a non-finite probability.")
             condition_multiplier = self._condition_multiplier_for_cell(cell_id, active)
-            probability = min(1.0, float(member_probs.mean()) * condition_multiplier)
+            traffic = self._traffic_effect(cell_id, traffic_readings)
+            probability = min(1.0, float(member_probs.mean()) * condition_multiplier * traffic[0])
             return self._serialize_prediction(
                 cell_id, frame, np.asarray([probability]), float(member_probs.std()), include_shap, scored_at,
                 active_conditions=active, condition_source=condition_source,
                 condition_observed_at=condition_observed_at,
-                condition_multiplier=condition_multiplier)
+                condition_multiplier=condition_multiplier, traffic=traffic)
         except Exception as exc:
             raise MLRuntimeError(f"Live prediction failed: {exc}") from exc
 
     def predict_batch(self, cell_ids: Iterable[str], overrides: Any | None = None,
                       *, now: datetime | None = None,
-                      active_conditions: Iterable[str] | None = None) -> list[dict[str, Any]]:
+                      active_conditions: Iterable[str] | None = None,
+                      traffic_readings: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(cell_ids))
         scored_at = now or datetime.now(timezone.utc)
         unknown = [cid for cid in ids if cid not in self._cell_positions]
@@ -478,6 +506,15 @@ class InferenceRuntime:
             risk_values = risk_scores[positions].tolist()
             confidence_values = [confidence[i] for i in positions]
             multiplier_values = multipliers[positions].tolist()
+            traffic_values: list[float] = []
+            traffic_buckets: list[str | None] = []
+            for index, cell_id in enumerate(ids):
+                factor, bucket, _ = self._traffic_effect(cell_id, traffic_readings)
+                traffic_values.append(factor)
+                traffic_buckets.append(bucket)
+                if factor != 1.0:
+                    probability_values[index] = min(1.0, probability_values[index] * factor)
+                    risk_values[index] = self._rank_score(probability_values[index], self.probability_reference)
             overlays = self._incident_overlay_map(scored_at)
             incident_counts: list[int] = []
             overlay_points: list[float] = []
@@ -498,12 +535,14 @@ class InferenceRuntime:
                                    "independent_reporters": independent_count,
                                    "bonus_points": bonus_points},
                  "condition_multiplier": multiplier,
+                 "traffic_multiplier": traffic_factor,
+                 "traffic_bucket": traffic_bucket,
                  "shap_contributors": []}
                 for cell_id, probability, risk, live, certainty, incident_count, points,
-                    independent_count, bonus_points, multiplier
+                    independent_count, bonus_points, multiplier, traffic_factor, traffic_bucket
                 in zip(ids, probability_values, risk_values, live_values, confidence_values,
                        incident_counts, overlay_points, independent_reporters,
-                       corroboration_bonuses, multiplier_values)
+                       corroboration_bonuses, multiplier_values, traffic_values, traffic_buckets)
             ]
         except Exception as exc:
             raise MLRuntimeError(f"Batch prediction failed: {exc}") from exc

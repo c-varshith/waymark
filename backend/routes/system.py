@@ -16,7 +16,9 @@ def _model_health(request: Request) -> dict[str, object]:
     runtime = getattr(request.app.state, "ml_runtime", None)
     if runtime is None:
         return {"model_loaded": False, "condition_lift_enabled": False,
-                "condition_lift_applied": False}
+                "condition_lift_applied": False, "traffic_lift_loaded": False,
+                "traffic_lift_version": None, "traffic_lift_verdict": None,
+                "traffic_lift_applied": False}
     with runtime._lock:
         active_incidents = len(runtime._active_incidents)
     return {"model_loaded": True, "model_version": runtime.model_version,
@@ -25,7 +27,11 @@ def _model_health(request: Request) -> dict[str, object]:
             "condition_lift_enabled": runtime.condition_lift_enabled,
             "condition_lift_version": runtime.condition_lift_version,
             "condition_lift_applied": (runtime.condition_lift_enabled
-                                        and config.CONDITION_LIFT_APPLIES_TO_RANKING)}
+                                        and config.CONDITION_LIFT_APPLIES_TO_RANKING),
+            "traffic_lift_loaded": runtime.traffic_lift is not None,
+            "traffic_lift_version": runtime.traffic_lift.version if runtime.traffic_lift else None,
+            "traffic_lift_verdict": runtime.traffic_lift.verdict if runtime.traffic_lift else None,
+            "traffic_lift_applied": bool(runtime.traffic_lift and runtime.traffic_lift.applied)}
 
 
 @router.get("/health", response_model=Health, response_model_exclude_none=True)
