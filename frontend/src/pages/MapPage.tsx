@@ -353,12 +353,11 @@ export default function MapPage() {
   useEffect(() => {
     const refreshWhenVisible = () => {
       if (document.visibilityState !== 'visible') return
-      cellsQ.reload()
       if (selectedId) detailQ.reload()
     }
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => document.removeEventListener('visibilitychange', refreshWhenVisible)
-    // The map and selected-cell queries remount on route entry; this listener covers returning to a hidden tab.
+    // The live stream reconnects and snapshots on visibility; avoid reloading the full cell set here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
