@@ -196,6 +196,7 @@ OPS_TABLES = [Report.__table__, Measure.__table__, MeasureCell.__table__, Eviden
 def create_ops_tables(engine: Engine) -> None:
     """Create missing operations tables and add account columns for existing installs."""
     Base.metadata.create_all(engine, tables=OPS_TABLES, checkfirst=True)
+    ensure_condition_snapshot_weather_nullable(engine)
     account_columns = {column["name"] for column in inspect(engine).get_columns("accounts")}
     if "role" not in account_columns:
         with engine.begin() as connection:
@@ -209,3 +210,52 @@ def create_ops_tables(engine: Engine) -> None:
             connection.exec_driver_sql("ALTER TABLE measures ADD COLUMN due_at TIMESTAMP NULL")
         if "progress_note" not in measure_columns:
             connection.exec_driver_sql("ALTER TABLE measures ADD COLUMN progress_note TEXT NULL")
+
+
+def ensure_condition_snapshot_weather_nullable(engine: Engine) -> None:
+    """Upgrade older SQLite condition history tables so unavailable weather can be NULL."""
+    if engine.dialect.name != "sqlite":
+        return
+    columns = {column["name"]: column for column in inspect(engine).get_columns("condition_snapshots")}
+    weather_columns = ("rain", "night")
+    if not all(name in columns for name in weather_columns):
+        return
+    if all(columns[name]["nullable"] for name in weather_columns):
+        return
+
+    # SQLite cannot change a column's nullability in place. Rebuild this small,
+    # cell-only table transactionally and recreate its indexes after the rename.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""
+            CREATE TABLE condition_snapshots_nullable_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cell_id VARCHAR NOT NULL,
+                at DATETIME NOT NULL,
+                rain BOOLEAN NULL,
+                night BOOLEAN NULL,
+                rush BOOLEAN NOT NULL,
+                congestion_bucket VARCHAR NULL,
+                base_score FLOAT NOT NULL,
+                live_score FLOAT NOT NULL,
+                active_incident_count INTEGER NOT NULL,
+                model_version VARCHAR NULL,
+                condition_lift_version VARCHAR NULL
+            )
+        """)
+        connection.exec_driver_sql("""
+            INSERT INTO condition_snapshots_nullable_migration
+                (id, cell_id, at, rain, night, rush, congestion_bucket, base_score,
+                 live_score, active_incident_count, model_version, condition_lift_version)
+            SELECT id, cell_id, at, rain, night, rush, congestion_bucket, base_score,
+                   live_score, active_incident_count, model_version, condition_lift_version
+            FROM condition_snapshots
+        """)
+        connection.exec_driver_sql("DROP TABLE condition_snapshots")
+        connection.exec_driver_sql(
+            "ALTER TABLE condition_snapshots_nullable_migration RENAME TO condition_snapshots")
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_condition_snapshots_cell_id ON condition_snapshots(cell_id)")
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_condition_snapshots_at ON condition_snapshots(at)")
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_condition_snapshots_cell_at ON condition_snapshots(cell_id, at)")

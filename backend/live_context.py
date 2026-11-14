@@ -193,7 +193,7 @@ class LiveContextManager:
         signature = (tuple(after["active_conditions"]), after["status"])
         if signature != self._last_published_signature and self.broadcaster is not None:
             try:
-                self.broadcaster.publish("context.changed", {})
+                self.broadcaster.publish("context.changed", {"at": _iso(now)})
             except Exception:
                 log.warning("Could not publish context.changed", exc_info=True)
         self._last_published_signature = signature

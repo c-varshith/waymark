@@ -114,7 +114,7 @@ def test_context_changed_publishes_once_per_condition_or_status_change_with_no_r
     asyncio.run(manager.poll_once())
     asyncio.run(manager.poll_once())
     assert [name for name, _ in hub.events] == ["context.changed", "context.changed"]
-    assert all(payload == {} for _, payload in hub.events)
+    assert all(payload == {"at": "2026-11-14T01:00:00Z"} for _, payload in hub.events)
 
 
 def test_stale_status_is_derived_from_last_success_age():

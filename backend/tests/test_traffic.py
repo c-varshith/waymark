@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from backend import realtime_config as config
-from backend.models_ops import ConditionSnapshot, TrafficRequestCounter
+from backend.models_ops import (ConditionSnapshot, TrafficRequestCounter,
+                                ensure_condition_snapshot_weather_nullable)
 from backend.routes.traffic import get_traffic, watch_cell
 from backend.schemas import TrafficWatchRequest
 from backend.traffic import (ConditionHistoryWriter, TrafficManager, TomTomTrafficProvider,
@@ -301,6 +302,47 @@ def test_condition_history_writes_cell_only_rows_and_prunes_retention(monkeypatc
                                  congestion_bucket=None, base_score=10, live_score=10, active_incident_count=0))
         db.commit()
         assert prune_condition_history(db, now) == 1
+
+
+def test_legacy_sqlite_condition_history_is_upgraded_for_missing_weather(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-condition-history.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""
+            CREATE TABLE condition_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cell_id VARCHAR NOT NULL,
+                at DATETIME NOT NULL,
+                rain BOOLEAN NOT NULL,
+                night BOOLEAN NOT NULL,
+                rush BOOLEAN NOT NULL,
+                congestion_bucket VARCHAR NULL,
+                base_score FLOAT NOT NULL,
+                live_score FLOAT NOT NULL,
+                active_incident_count INTEGER NOT NULL,
+                model_version VARCHAR NULL,
+                condition_lift_version VARCHAR NULL
+            )
+        """)
+        connection.exec_driver_sql("""
+            INSERT INTO condition_snapshots
+                (cell_id, at, rain, night, rush, congestion_bucket, base_score,
+                 live_score, active_incident_count, model_version, condition_lift_version)
+            VALUES ('cell-a', '2026-11-14 01:00:00', 0, 1, 1, NULL, 20, 20, 0, 'model', NULL)
+        """)
+
+    ensure_condition_snapshot_weather_nullable(engine)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("condition_snapshots")}
+    assert columns["rain"]["nullable"] is True
+    assert columns["night"]["nullable"] is True
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""
+            INSERT INTO condition_snapshots
+                (cell_id, at, rain, night, rush, congestion_bucket, base_score,
+                 live_score, active_incident_count, model_version, condition_lift_version)
+            VALUES ('cell-b', '2026-11-14 01:15:00', NULL, NULL, 1, NULL, 21, 21, 0, 'model', NULL)
+        """)
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM condition_snapshots").scalar_one() == 2
+    engine.dispose()
 
 
 def test_condition_history_export_contains_only_declared_cell_fields(tmp_path):

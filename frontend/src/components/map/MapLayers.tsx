@@ -112,6 +112,7 @@ interface HexLayerProps {
   highlightIds?: ReadonlySet<string> | null
   /** Called when a grouped hexagon (a region) is clicked. */
   onPickRegion?: (id: string, res: number, position?: [number, number]) => void
+  pulseEvent?: { cellId: string; nonce: number; at: number } | null
 }
 
 /**
@@ -132,10 +133,12 @@ export function HexLayer({
   forceNative = false,
   highlightIds = null,
   onPickRegion,
+  pulseEvent = null,
 }: HexLayerProps) {
   const map = useMap()
   const onSelectRef = useRef(onSelect)
   const onPickRegionRef = useRef(onPickRegion)
+  const lastFillById = useRef(new Map<string, string>())
   useEffect(() => {
     onSelectRef.current = onSelect
     onPickRegionRef.current = onPickRegion
@@ -212,6 +215,12 @@ export function HexLayer({
     const stops = scenarioMode ? DELTA_STOPS : SCORE_STOPS
     const area = renderBounds
     const colorOf = (v: number | null) => (v === null ? NO_DATA_COLOR : rampColor(stops, v))
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    let activePulseId: string | null = null
+    if (pulseEvent && Date.now() - pulseEvent.at < 1200) {
+      try { activePulseId = grouped ? cellToParent(pulseEvent.cellId, res) : pulseEvent.cellId } catch { /* ignore invalid event cells */ }
+    }
+    const colorFrames: number[] = []
 
     const isDim = (it: HexItem) => !!highlightIds && !!it.cell && !highlightIds.has(it.id)
     const rank = (it: HexItem) => (isDim(it) ? -10 : 0) + (it.value ?? -2)
@@ -220,14 +229,18 @@ export function HexLayer({
     for (const it of visible) {
       const dim = isDim(it)
       const fill = colorOf(it.value)
+      const isPulseTarget = activePulseId === it.id
+      const previousFill = lastFillById.current.get(it.id)
+      const animateFill = isPulseTarget && !reduceMotion && !!previousFill && previousFill !== fill
       const flagged = it.emerging > 0 && !dim
       const baseOpacity = dim ? fillOpacity * DIM_FACTOR : highlightIds ? Math.min(0.85, fillOpacity + 0.25) : fillOpacity
       const poly = L.polygon(boundaryOf(it.id), {
         color: flagged ? MAP_PALETTE.navy : '#ffffff',
         weight: dim ? 0.8 : flagged ? (grouped ? 2.5 : 3) : 1,
         opacity: dim ? 0.5 : flagged ? 0.95 : 0.7,
-        fillColor: fill,
+        fillColor: animateFill ? previousFill! : fill,
         fillOpacity: it.value === null ? baseOpacity * 0.5 : baseOpacity,
+        className: animateFill ? 'wm-live-color' : undefined,
       })
       if (it.cell) {
         const c = it.cell
@@ -256,6 +269,17 @@ export function HexLayer({
         })
       }
       group.addLayer(poly)
+      if (animateFill) {
+        colorFrames.push(window.requestAnimationFrame(() => poly.setStyle({ fillColor: fill })))
+      }
+      if (isPulseTarget && !reduceMotion) {
+        const ripple = L.polygon(boundaryOf(it.id), {
+          color: MAP_PALETTE.brass, weight: 4, opacity: 0.9, fill: false,
+          interactive: false, className: 'wm-live-ripple',
+        })
+        group.addLayer(ripple)
+      }
+      lastFillById.current.set(it.id, fill)
 
       if (points && centerPoints && it.cell && !dim) {
         const c = it.cell
@@ -322,9 +346,10 @@ export function HexLayer({
       )
     }
     return () => {
+      colorFrames.forEach((frame) => window.cancelAnimationFrame(frame))
       group.remove()
     }
-  }, [items, renderBounds, grouped, points, centerPoints, scenarioMode, tooltipFor, selectedId, selected, map, fillOpacity, res, highlightIds])
+  }, [items, renderBounds, grouped, points, centerPoints, scenarioMode, tooltipFor, selectedId, selected, map, fillOpacity, res, highlightIds, pulseEvent])
 
   return null
 }

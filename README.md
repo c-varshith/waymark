@@ -15,7 +15,7 @@ Explore road-risk patterns, understand the signals behind each score, and help t
 ![LightGBM](https://img.shields.io/badge/ML-LightGBM-4c8c4a?logo=lightgbm&logoColor=white)
 ![Maps](https://img.shields.io/badge/Maps-Leaflet%20%2B%20H3-356b58?logo=leaflet&logoColor=white)
 
-[Features](#features) · [Quick start](#quick-start) · [Architecture](#architecture) · [API](#api) · [Model and data](#model-and-data) · [Responsible use](#limitations-and-responsible-use)
+[Screenshots](#screenshots) · [Features](#features) · [Quick start](#quick-start) · [Architecture](#architecture) · [API](#api) · [Model and data](#model-and-data) · [Responsible use](#limitations-and-responsible-use)
 
 </div>
 
@@ -26,6 +26,13 @@ Explore road-risk patterns, understand the signals behind each score, and help t
 WAYMARK divides the Houston study area into H3 hexagonal cells of roughly 0.1 km² and assigns each cell a 0–100 relative risk score. The interface brings the map, model evidence, what-if scenarios, incident reports, and human-reviewed safety measures into one workspace.
 
 The project is a predictive safety intelligence layer: it is designed to support analysis alongside existing mapping and transportation tools, rather than replace them.
+
+## Screenshots
+
+<p align="center">
+  <img src="frontend/images/main.jpeg" alt="WAYMARK landing page showing Houston road-risk overview" width="49%" />
+  <img src="frontend/images/map.jpeg" alt="WAYMARK interactive Houston risk map with cell details" width="49%" />
+</p>
 
 | At a glance | Details |
 | --- | --- |

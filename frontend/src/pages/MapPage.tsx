@@ -25,6 +25,7 @@ import { Toast } from '../components/ops/Toast'
 import type { ToastData } from '../components/ops/Toast'
 import { useDriverLocation } from '../hooks/useDriverLocation'
 import { DriverLayer } from '../components/map/DriverLayer'
+import { ActivityTicker } from '../components/map/ActivityTicker'
 import { useLiveStream } from '../hooks/useLiveStream'
 import { ALERT_THRESHOLD, DriverModeControl } from '../components/map/DriverModeControl'
 import type { MonitorState } from '../components/map/DriverModeControl'
@@ -80,6 +81,8 @@ export default function MapPage() {
   const contextQ = useApi(api.liveContext, [])
   const modelHealthQ = useApi(api.modelHealth, [])
   const trafficQ = useApi(api.liveTraffic, [], { keepPrevious: true })
+  const reloadLiveContext = contextQ.reload
+  const reloadTraffic = trafficQ.reload
   const [trafficLayerOn, setTrafficLayerOn] = useState(false)
   const [mapMode, setMapMode] = useState<MapMode>('baseline')
   const [contextRevision, setContextRevision] = useState(0)
@@ -135,6 +138,9 @@ export default function MapPage() {
   const [incidentRefreshKey, setIncidentRefreshKey] = useState(0)
   const [incidentLayerRefreshKey, setIncidentLayerRefreshKey] = useState(0)
   const [snapshotScoredAt, setSnapshotScoredAt] = useState<string | null>(null)
+  const [tickerEvent, setTickerEvent] = useState<ServerEvent | null>(null)
+  const [pulseEvent, setPulseEvent] = useState<{ cellId: string; nonce: number; at: number } | null>(null)
+  const pulseNonce = useRef(0)
   const scenarioActive = mapMode === 'what-if' && (scenario.night || scenario.rain || scenario.lowVis)
   const predictionOverrides = useMemo<PredictionOverrides>(() => ({
     ...(scenario.rain ? { weather_condition: 'rain' as const } : {}),
@@ -444,8 +450,14 @@ export default function MapPage() {
   }, [selectedId, reloadDetail])
   const handleLiveEvent = useCallback((event: ServerEvent) => {
     const cellId = typeof event.data.cell_id === 'string' ? event.data.cell_id : null
+    if (cellId && ['incident.created', 'incident.reviewed', 'prediction.updated', 'traffic.updated'].includes(event.event)) {
+      setTickerEvent(event)
+    }
+    if (cellId && (event.event === 'incident.created' || event.event === 'prediction.updated')) {
+      setPulseEvent({ cellId, nonce: ++pulseNonce.current, at: Date.now() })
+    }
     if (event.event === 'traffic.updated') {
-      trafficQ.reload()
+      reloadTraffic()
       return
     }
     if (event.event === 'prediction.updated' && cellId) {
@@ -485,7 +497,7 @@ export default function MapPage() {
       return
     }
     if (event.event === 'context.changed') {
-      contextQ.reload()
+      reloadLiveContext()
       if (contextRefreshTimer.current !== null) window.clearTimeout(contextRefreshTimer.current)
       contextRefreshTimer.current = window.setTimeout(() => {
         contextRefreshTimer.current = null
@@ -493,15 +505,15 @@ export default function MapPage() {
       }, 2000)
       if (selectedId) setIncidentRefreshKey((n) => n + 1)
     }
-  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, contextQ.reload, trafficQ.reload])
+  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, reloadLiveContext, reloadTraffic])
   const liveStream = useLiveStream(handleLiveEvent, applyLiveSnapshot)
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') trafficQ.reload()
+      if (document.visibilityState === 'visible') reloadTraffic()
     }, 60_000)
     return () => window.clearInterval(timer)
-  }, [trafficQ.reload])
+  }, [reloadTraffic])
 
   useEffect(() => {
     if (selectedId) void api.watchTrafficCell(selectedId).catch(() => undefined)
@@ -697,6 +709,7 @@ export default function MapPage() {
           tooltipFor={tooltipFor}
           selectedId={selectedId}
           selected={selectedPos}
+          pulseEvent={pulseEvent}
           onSelect={(id, point) => {
             if (pickSimMode && point) { placeSimLocation(point[0], point[1]); return }
             if (pickIncidentMode && point) { setIncidentPoint(point); setPickIncidentMode(false); return }
@@ -730,7 +743,7 @@ export default function MapPage() {
       {pickSimMode && <p role="status" className="pointer-events-none absolute bottom-4 left-1/2 z-[1040] -translate-x-1/2 rounded-full bg-brass px-3 py-2 text-center text-xs font-semibold text-navy shadow-card md:bottom-auto md:top-24">Tap the map to set the simulated test location</p>}
       {pickIncidentMode && <p role="status" className="pointer-events-none absolute bottom-4 left-1/2 z-[1040] -translate-x-1/2 rounded-full bg-navy px-3 py-2 text-center text-xs font-semibold text-ivory shadow-card md:bottom-auto md:top-24">Tap map to place report</p>}
 
-      {/* Map status and details control stay together in the top-right control row. */}
+      {/* Map layer controls stay at the top-right. */}
       <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
         <div className="flex items-center gap-1 rounded-full bg-white/95 p-1 shadow-card">
           <button type="button" aria-pressed={trafficLayerOn} onClick={() => setTrafficLayerOn((on) => !on)}
@@ -749,12 +762,6 @@ export default function MapPage() {
               : 'Context only, not a validated improvement'}
           </div>
         </>}
-        <div role="status" aria-live="polite" className={`order-0 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1.5 text-[11px] font-semibold text-navy shadow-card md:order-1 ${liveStream.state === 'offline' ? 'max-w-[min(70vw,20rem)]' : ''}`}>
-          <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
-          {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
-            ? `Offline: showing scores from ${snapshotScoredAt ? new Date(snapshotScoredAt).toLocaleTimeString() : 'last snapshot'}`
-            : liveStream.state === 'reconnecting' ? 'Reconnecting to live updates' : 'Connecting to live updates'}
-        </div>
         {region ? (
           <button
             type="button"
@@ -800,6 +807,17 @@ export default function MapPage() {
           className={`order-2 inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-card md:order-1 md:min-h-9 sm:text-sm ${pickIncidentMode ? 'bg-brass text-navy' : 'bg-navy text-ivory'}`}>
           <MapPin aria-hidden="true" className="h-3.5 w-3.5" /> {pickIncidentMode ? 'Cancel report' : 'Report incident'}
         </button>}
+      </div>
+
+      <div role="status" aria-live="polite" className={`absolute bottom-3 z-[1060] inline-flex max-w-[min(82vw,22rem)] items-center gap-1.5 rounded-full bg-white/95 px-3 py-2 text-[11px] font-semibold text-navy shadow-card md:bottom-4 ${leftPaneOpen ? 'left-3 md:left-[25rem]' : 'left-3 md:left-4'}`}>
+        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
+        {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
+          ? `Offline: scores from ${snapshotScoredAt ? new Date(snapshotScoredAt).toLocaleTimeString() : 'last snapshot'}`
+          : liveStream.state === 'reconnecting' ? 'Reconnecting to live updates' : 'Connecting to live updates'}
+      </div>
+
+      <div className={`absolute bottom-14 z-[1050] ${leftPaneOpen ? 'left-3 md:left-[25rem]' : 'left-3 md:left-4'}`}>
+        <ActivityTicker event={tickerEvent} cellsById={cellsById} onSelect={selectCell} />
       </div>
 
       {!leftPaneOpen && <button

@@ -165,6 +165,7 @@ class PredictionResponse(BaseModel):
     confidence: str
     active_incident_count: int
     incident_overlay_points: float
+    corroboration: dict[str, object] = Field(default_factory=dict)
     overlay_params: dict[str, object] = Field(default_factory=dict)
     adjustments: list[PredictionAdjustment] = Field(default_factory=list)
     condition_multiplier: float = 1.0
@@ -181,6 +182,7 @@ class BatchPredictionItem(BaseModel):
     confidence: str
     active_incident_count: int
     incident_overlay_points: float
+    corroboration: dict[str, object] = Field(default_factory=dict)
     condition_multiplier: float = 1.0
     shap_contributors: list[ShapItem] = Field(default_factory=list)
 

@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS public.condition_snapshots (
   model_version VARCHAR NULL,
   condition_lift_version VARCHAR NULL
 );
+-- Existing installations may have created these columns NOT NULL before weather
+-- became optional. Keep the migration safe to re-run on either schema version.
+ALTER TABLE public.condition_snapshots ALTER COLUMN rain DROP NOT NULL;
+ALTER TABLE public.condition_snapshots ALTER COLUMN night DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_condition_snapshots_cell_id ON public.condition_snapshots(cell_id);
 CREATE INDEX IF NOT EXISTS ix_condition_snapshots_at ON public.condition_snapshots(at);
 CREATE INDEX IF NOT EXISTS ix_condition_snapshots_cell_at ON public.condition_snapshots(cell_id, at);

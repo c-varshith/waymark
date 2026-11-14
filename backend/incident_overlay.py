@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from . import realtime_config as config
@@ -17,6 +17,9 @@ class OverlayConfig:
     max_age_minutes: float
     pending_max_age_minutes: float
     overlay_cap: float
+    corroboration_window_minutes: float = config.CORROBORATION_WINDOW_MIN
+    corroboration_bonus: float = config.CORROBORATION_BONUS
+    corroboration_max: float = config.CORROBORATION_MAX
 
 
 DEFAULT_CONFIG = OverlayConfig(
@@ -27,6 +30,9 @@ DEFAULT_CONFIG = OverlayConfig(
     max_age_minutes=config.MAX_AGE_MINUTES,
     pending_max_age_minutes=config.PENDING_MAX_AGE_MINUTES,
     overlay_cap=config.OVERLAY_CAP,
+    corroboration_window_minutes=config.CORROBORATION_WINDOW_MIN,
+    corroboration_bonus=config.CORROBORATION_BONUS,
+    corroboration_max=config.CORROBORATION_MAX,
 )
 
 
@@ -62,9 +68,10 @@ def _field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def aggregate(items: Iterable[Any], now: datetime, cfg: OverlayConfig = DEFAULT_CONFIG
-              ) -> dict[str, tuple[float, int]]:
-    totals: dict[str, tuple[float, int]] = {}
+def aggregate_details(items: Iterable[Any], now: datetime, cfg: OverlayConfig = DEFAULT_CONFIG
+                      ) -> dict[str, tuple[float, int, int, float]]:
+    """Return capped points, effective reports, independent reporters, and bonus points by cell."""
+    grouped: dict[str, list[tuple[float, datetime, Any]]] = {}
     for item in items:
         points = effective_points(
             str(_field(item, "kind", "")),
@@ -76,9 +83,36 @@ def aggregate(items: Iterable[Any], now: datetime, cfg: OverlayConfig = DEFAULT_
         if points <= 0:
             continue
         cell_id = str(_field(item, "cell_id", ""))
-        total, count = totals.get(cell_id, (0.0, 0))
-        totals[cell_id] = (min(cfg.overlay_cap, total + points), count + 1)
+        grouped.setdefault(cell_id, []).append((points, _utc(_field(item, "occurred_at")),
+                                                 _field(item, "reporter_id")))
+    totals: dict[str, tuple[float, int, int, float]] = {}
+    for cell_id, reports in grouped.items():
+        base_total = sum(points for points, _occurred, _reporter in reports)
+        cutoff = _utc(now) - timedelta(minutes=max(0.0, cfg.corroboration_window_minutes))
+        recent = sorted((row for row in reports if row[1] >= cutoff), key=lambda row: row[1])
+        reporters: set[str] = set()
+        bonus = 0.0
+        for points, _occurred, reporter in recent:
+            if reporter is None:
+                continue
+            reporter_key = str(reporter)
+            if reporter_key in reporters:
+                continue
+            reporters.add(reporter_key)
+            if len(reporters) > 1:
+                bonus += points * max(0.0, cfg.corroboration_bonus)
+        independent = max(0, len(reporters) - 1)
+        bonus = min(bonus, max(0.0, base_total * (cfg.corroboration_max - 1.0)))
+        total = min(cfg.overlay_cap, base_total + bonus)
+        totals[cell_id] = (total, len(reports), independent, bonus)
     return totals
+
+
+def aggregate(items: Iterable[Any], now: datetime, cfg: OverlayConfig = DEFAULT_CONFIG
+              ) -> dict[str, tuple[float, int]]:
+    """Backward-compatible points/count view of aggregate_details."""
+    return {cell_id: (points, count) for cell_id, (points, count, _independent, _bonus)
+            in aggregate_details(items, now, cfg).items()}
 
 
 def overlay_params(cfg: OverlayConfig = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -86,4 +120,7 @@ def overlay_params(cfg: OverlayConfig = DEFAULT_CONFIG) -> dict[str, Any]:
         "half_life_minutes": cfg.half_life_minutes,
         "status_weights": dict(cfg.status_weight),
         "min_effective_points": cfg.min_effective_points,
+        "corroboration_window_minutes": cfg.corroboration_window_minutes,
+        "corroboration_bonus": cfg.corroboration_bonus,
+        "corroboration_max": cfg.corroboration_max,
     }

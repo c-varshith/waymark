@@ -113,7 +113,8 @@ def create_incident(body: IncidentReportIn, request: Request, db: Session = Depe
     row = _save_report(db, body, cell_id, user)
     runtime = _runtime(request) if request is not None else None
     if runtime is not None:
-        runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at)
+        runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at,
+                                  reporter_id=row.reported_by)
         _publish_best_effort(request, runtime, "incident.created", {
             "cell_id": cell_id, "kind": row.kind, "at": iso_req(row.created_at),
         }, cell_id)
@@ -162,7 +163,8 @@ async def create_live_incident(body: IncidentReportIn, request: Request, db: Ses
         else:
             log.exception("Unexpected incident live scoring failure")
         raise HTTPException(503, "Live inference failed. The incident was not submitted.") from None
-    runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at)
+    runtime.activate_incident(row.id, cell_id, row.kind, status=row.status, occurred_at=row.occurred_at,
+                              reporter_id=row.reported_by)
     _publish_best_effort(request, runtime, "incident.created", {
         "cell_id": cell_id, "kind": row.kind, "at": iso_req(row.created_at),
     }, cell_id)
