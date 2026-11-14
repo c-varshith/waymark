@@ -20,6 +20,8 @@ interface Props {
   livePrediction: LivePrediction | null
   livePredictionLoading: boolean
   livePredictionError: string | null
+  scoreMode: 'baseline' | 'live' | 'what-if'
+  conditionLiftApplied: boolean
 }
 
 function Stat({ label, value, primary = false }: { label: string; value: string; primary?: boolean }) {
@@ -114,7 +116,7 @@ function MeasuresSection({ detail }: { detail: CellDetail }) {
   )
 }
 
-export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError }: Props) {
+export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError, scoreMode, conditionLiftApplied }: Props) {
   const ref = useRef<HTMLElement>(null)
   const [staleClock, setStaleClock] = useState(() => Date.now())
 
@@ -133,6 +135,8 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
   const scoredAtValid = scoredAt && Number.isFinite(scoredAt.getTime())
   const stale = !!scoredAtValid && staleClock - scoredAt.getTime() > (livePrediction?.stale_after_seconds ?? STALE_AFTER_SECONDS) * 1000
   const contextLabel = livePrediction?.context_source === 'scenario' ? 'Scenario' : livePrediction?.context_source === 'live' ? 'Live' : 'Baseline'
+  const overlayParams = livePrediction?.overlay_params
+  const pendingWeight = overlayParams?.status_weights.pending
 
   return (
     <aside
@@ -185,12 +189,18 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
 
             <dl className="grid grid-cols-2 gap-2">
               <Stat
-                label={scenario ? `${scenarioLabel} likelihood (estimate)` : 'Blackspot likelihood'}
-                value={fmtProb(scenario ? scenario.scenario : detail.baseline_prob)}
+                label={scenario ? `${scenarioLabel} likelihood (estimate)` : scoreMode === 'live' ? 'Live condition-adjusted likelihood' : 'Blackspot likelihood'}
+                value={fmtProb(scenario ? scenario.scenario : scoreMode === 'live' && livePrediction ? livePrediction.risk_probability : detail.baseline_prob)}
                 primary
               />
               <Stat label="Past crashes" value={fmtInt(detail.n_past_crashes)} />
               <Stat label="Live score (0 to 100)" value={livePrediction ? livePrediction.live_risk_score.toFixed(1) : '—'} />
+              {livePrediction && livePrediction.active_incident_count > 0 && overlayParams && (
+                <p className="col-span-2 -mt-1 text-xs font-medium text-navy/70">
+                  +{fmtPts(livePrediction.incident_overlay_points)} points from {livePrediction.active_incident_count} recent report{livePrediction.active_incident_count === 1 ? '' : 's'}
+                  {' '}(decays with a {fmtInt(overlayParams.half_life_minutes)} minute half-life{pendingWeight === undefined ? '' : `; pending reports count at ${Math.round(pendingWeight * 100)}%`})
+                </p>
+              )}
               <Stat label="Baseline" value={fmtNum(detail.risk_score, 3)} />
               <Stat label="Verified" value={fmtNum(detail.adjusted_risk_score, 3)} />
               <Stat label="Projected (estimate)" value={fmtNum(detail.projected_risk_score, 3)} />
@@ -201,6 +211,25 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
                 <span className="rounded-full border border-navy/15 px-2 py-0.5 font-semibold">{contextLabel}</span>
                 {stale && <span aria-label={`Prediction is stale; last scored more than ${livePrediction?.stale_after_seconds ?? STALE_AFTER_SECONDS} seconds ago`} className="rounded-full border border-brick/45 bg-brick/10 px-2 py-0.5 font-bold text-brick">Stale</span>}
               </div>
+            )}
+            {scoreMode === 'live' && livePrediction && (livePrediction.adjustments?.length ?? 0) > 0 && (
+              <section aria-label="Live score adjustments" className="rounded-lg border border-teal/30 bg-teal/5 px-3 py-2.5">
+                <h3 className="text-sm font-bold">{conditionLiftApplied ? 'Live score adjustments' : 'Live condition context'}</h3>
+                <p className="mb-1 text-xs text-navy/70">
+                  {conditionLiftApplied
+                    ? 'Condition adjustments are applied after the baseline model score. SHAP factors below explain the baseline model only.'
+                    : 'Condition context only, not a validated improvement; it does not change the score or ranking. Incident overlays are shown separately. SHAP factors below explain the baseline model only.'}
+                </p>
+                <ul className="space-y-1.5 text-xs">
+                  {livePrediction.adjustments!.map((item, index) => (
+                    <li key={`${item.kind}-${index}`} className="rounded-md bg-white/80 px-2 py-1.5">
+                      <div className="font-semibold">{item.kind.replaceAll('_', ' ')}</div>
+                      <div>{item.reason}</div>
+                      <div className="text-navy/60">{item.source}{item.observed_at ? ` · ${new Date(item.observed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
             {scenario && (
               <section aria-live="polite" className="rounded-lg border border-brass/50 bg-brass/10 px-3 py-2.5">
@@ -246,7 +275,7 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
             <section>
               <h3 className="mb-1 text-sm font-bold">Score factors</h3>
               {livePredictionLoading && <p className="mb-1 text-xs text-navy/65" role="status">Recalculating live factors…</p>}
-              {livePredictionError && <p className="mb-1 text-xs font-medium text-brick" role="status">Live inference unavailable; showing stored factors.</p>}
+              {livePredictionError && <p className="mb-1 text-xs font-medium text-brick" role="status">Live inference unavailable. Stored factors are shown and are not a live score.</p>}
               {(livePrediction?.shap_contributors.length ?? 0) > 0 ? (
                 <>
                   <ShapChart rows={livePrediction!.shap_contributors.map((item) => ({

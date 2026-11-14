@@ -45,7 +45,7 @@ coverage/
 *.sqlite
 *.sqlite3
 *.before_advice
-/data/
+/data/*
 
 # -----------------------------------------------------------------------------
 # Temporary exports and machine-generated handoff files
@@ -71,4 +71,6 @@ modified_files.diff
 .DS_Store
 Thumbs.db
 
+# Dataset
 US_Accidents_March23.csv
+.venv312/

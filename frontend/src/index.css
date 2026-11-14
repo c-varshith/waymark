@@ -152,6 +152,21 @@ h3 {
   font-weight: 800;
   box-shadow: 0 1px 3px rgb(30 35 39 / 0.4);
 }
+.leaflet-interactive.wm-live-color { transition: fill 800ms ease; }
+.wm-live-ripple {
+  pointer-events: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: wm-hex-ripple 800ms ease-out both;
+}
+@keyframes wm-hex-ripple {
+  from { opacity: 0.9; transform: scale(1); }
+  to { opacity: 0; transform: scale(1.28); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .leaflet-interactive.wm-live-color { transition: none; }
+  .wm-live-ripple { animation: none; }
+}
 .leaflet-marker-icon:focus-visible .wm-marker-badge {
   outline: 3px solid var(--color-sign);
   outline-offset: 2px;

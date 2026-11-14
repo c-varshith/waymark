@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import pytest
@@ -11,9 +12,11 @@ from starlette.requests import Request
 
 from backend.auth import Role, User
 from backend.ml_runtime import InferenceRuntime
+from backend import realtime_config
 from backend.models import Base, Cell
 from backend.routes.incidents import create_live_incident, review_incident
 from backend.routes.predict import predict, predict_batch
+from backend.routes.system import _model_health
 from backend.schemas import (BatchPredictRequest, IncidentReportIn, IncidentReviewIn,
                              PredictRequest, PredictionOverrides)
 
@@ -105,12 +108,52 @@ def test_batch_prediction_returns_scores_without_shap_and_incident_overlay_is_se
     live = runtime.predict(cell_ids[0])
     assert live["risk_probability"] == base["risk_probability"]
     assert live["risk_score"] == base["risk_score"]
-    assert live["live_risk_score"] == pytest.approx(min(100, base["risk_score"] + 30))
+    assert live["live_risk_score"] == pytest.approx(min(100, base["risk_score"] + 18))
     runtime.reject_incident(1)
-    assert runtime.predict(cell_ids[0])["incident_overlay_points"] == 10
+    assert runtime.predict(cell_ids[0])["incident_overlay_points"] == pytest.approx(6)
 
 
-def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay():
+def test_condition_context_is_not_applied_to_scores_by_default(monkeypatch):
+    runtime, cell_ids = runtime_fixture()
+    monkeypatch.setattr(realtime_config, "CONDITION_LIFT_APPLIES_TO_RANKING", False)
+    citywide = {name: {"p": 0.1, "h": 0.1, "L": 1.0} for name in ("rain", "night", "rush")}
+    condition_lift = {
+        "schema_version": 1,
+        "citywide": citywide,
+        "cells": {cell_ids[0]: {"n": 10, "conditions": {
+            "rain": {"k": 8, "prone": True, "multiplier": 1.5},
+            "night": {"k": 0, "prone": False, "multiplier": 1.0},
+            "rush": {"k": 0, "prone": False, "multiplier": 1.0},
+        }}},
+    }
+    runtime._load_condition_lift(condition_lift, "lift-test")
+    health = _model_health(request_for(runtime))
+    assert health["condition_lift_enabled"] is True
+    assert health["condition_lift_applied"] is False
+
+    baseline = runtime.predict(cell_ids[0])
+    context = runtime.predict(cell_ids[0], active_conditions=("rain",))
+    assert runtime.condition_lift_enabled is True
+    assert context["condition_multiplier"] == 1.0
+    assert context["risk_probability"] == baseline["risk_probability"]
+    assert context["risk_score"] == baseline["risk_score"]
+    assert context["adjustments"][0]["kind"] == "rain_context"
+    assert "context only, not a validated improvement" in context["adjustments"][0]["reason"].lower()
+
+    monkeypatch.setattr(realtime_config, "CONDITION_LIFT_APPLIES_TO_RANKING", True)
+    applied = runtime.predict(cell_ids[0], active_conditions=("rain",))
+    assert applied["condition_multiplier"] == pytest.approx(1.5)
+    assert applied["risk_probability"] > baseline["risk_probability"]
+    assert applied["adjustments"][0]["kind"] == "rain_lift"
+
+
+def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay(monkeypatch):
+    from backend.routes import incidents
+
+    async def inline_worker(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(incidents, "run_in_threadpool", inline_worker)
     runtime, cell_ids = runtime_fixture()
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -124,18 +167,20 @@ def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay():
         police = User(id="police", name="Police", role=Role.community)
         planner = User(id="planner", name="Planner", role=Role.planner)
         body = IncidentReportIn(kind="crash", lat=lat, lng=lng,
-                                occurred_at="2026-11-13T10:00:00Z", severity=3)
+                                occurred_at=datetime.now(timezone.utc).isoformat(), severity=3)
 
         created = asyncio.run(create_live_incident(body, request_for(runtime), db, police))
         assert created.incident.status == "pending"
         assert created.prediction.active_incident_count == 1
-        assert created.prediction.incident_overlay_points == 20
+        assert created.prediction.incident_overlay_points == pytest.approx(12, abs=0.001)
         assert created.prediction.live_risk_score == pytest.approx(
-            min(100, created.prediction.risk_score + 20))
+            min(100, created.prediction.risk_score + 12))
 
         reviewed = review_incident(created.incident.id, IncidentReviewIn(decision="reject", note="Duplicate"),
                                    request_for(runtime), db, planner)
         assert reviewed.status == "rejected"
+        assert reviewed.live_score_before == pytest.approx(created.prediction.live_risk_score)
+        assert reviewed.live_score_after == pytest.approx(created.prediction.risk_score)
         after = runtime.predict(cell_ids[0])
         assert after["active_incident_count"] == 0
         assert after["live_risk_score"] == after["risk_score"]
@@ -143,10 +188,11 @@ def test_live_incident_endpoint_returns_score_and_rejection_removes_overlay():
 
 def test_batch_parity_with_active_incidents():
     runtime, cell_ids = runtime_fixture()
+    now = datetime.now(timezone.utc)
     runtime.activate_incident(101, cell_ids[0], "crash")
     runtime.activate_incident(102, cell_ids[0], "near_miss")
-    batch = runtime.predict_batch(cell_ids)
-    single = [runtime.predict(cid, include_shap=False) for cid in cell_ids]
+    batch = runtime.predict_batch(cell_ids, now=now)
+    single = [runtime.predict(cid, include_shap=False, now=now) for cid in cell_ids]
     for actual, expected in zip(batch, single):
         for field in ("risk_probability", "risk_score"):
             assert actual[field] == pytest.approx(expected[field], abs=1e-9)
@@ -174,7 +220,7 @@ def test_live_batch_cache_is_model_only_and_incidents_are_applied_on_each_call()
     runtime.activate_incident(201, cell_ids[0], "crash")
     second = runtime.predict_batch(cell_ids, overrides)
     assert first[0]["risk_score"] == second[0]["risk_score"]
-    assert second[0]["live_risk_score"] == min(100, first[0]["risk_score"] + 20)
+    assert second[0]["live_risk_score"] == pytest.approx(min(100, first[0]["risk_score"] + 12))
     assert second[0]["active_incident_count"] == 1
     assert len(runtime._score_cache) <= 8
 

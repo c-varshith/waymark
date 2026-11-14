@@ -1,7 +1,7 @@
 // Typed wrappers for the operations endpoints (auth, reports, chat, measures, evidence).
 // Responses are checked just enough to fail with a clear message instead of crashing a screen.
-import { ApiError, deleteJson, getBlob, parseLiveIncidentResponse, patchJson, postForm, postJson, request, streamSse } from './api'
-import type { IncidentReport } from './api'
+import { ApiError, deleteJson, getBlob, parseIncidentReviewResponse, parseLiveIncidentResponse, patchJson, postForm, postJson, request, streamSse } from './api'
+import type { IncidentReport, IncidentReviewResponse } from './api'
 import type {
   CellMeasureBrief,
   ChatEvent,
@@ -94,7 +94,7 @@ export const opsApi = {
   createLiveIncident: async (body: { kind: 'crash' | 'near_miss'; lat: number; lng: number; occurred_at: string; severity?: number; reasons?: string[]; note?: string }) =>
     parseLiveIncidentResponse(await postJson('/api/incident', body)),
   reviewIncident: async (id: number, body: { decision: 'confirm' | 'reject'; note?: string }) =>
-    as<IncidentReport>(await postJson(`/api/incidents/${id}/review`, body), 'incident review', has('id', 'status', 'cell_id')),
+    parseIncidentReviewResponse(await postJson(`/api/incidents/${id}/review`, body)) as IncidentReviewResponse,
 
   // ---- evidence
   uploadEvidence: async (

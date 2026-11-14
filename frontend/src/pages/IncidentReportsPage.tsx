@@ -14,6 +14,7 @@ export default function IncidentReportsPage() {
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
   const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({})
+  const [reviewScores, setReviewScores] = useState<Record<number, { before: number | null; after: number | null; decision: 'confirm' | 'reject' }>>({})
   const reload = useCallback(async () => {
     setLoading(true); setError(null)
     try { setItems(await opsApi.incidents(WORLD)) }
@@ -26,7 +27,8 @@ export default function IncidentReportsPage() {
   async function review(row: IncidentReport, decision: 'confirm' | 'reject') {
     setBusyId(row.id); setError(null)
     try {
-      await opsApi.reviewIncident(row.id, { decision, ...(decision === 'reject' ? { note: rejectNotes[row.id] ?? '' } : {}) })
+      const result = await opsApi.reviewIncident(row.id, { decision, ...(decision === 'reject' ? { note: rejectNotes[row.id] ?? '' } : {}) })
+      setReviewScores((current) => ({ ...current, [row.id]: { before: result.live_score_before, after: result.live_score_after, decision } }))
       await reload()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not review this report.') }
     finally { setBusyId(null) }
@@ -46,6 +48,11 @@ export default function IncidentReportsPage() {
             <div className="mt-3 grid gap-3 sm:grid-cols-2"><p><span className="block text-xs font-bold text-navy/55">Incident time</span><span>{new Date(row.occurred_at).toLocaleString()}</span></p><p><span className="block text-xs font-bold text-navy/55">Location</span><span className="break-all">Cell {row.cell_id}, {row.lat.toFixed(5)}, {row.lng.toFixed(5)}</span></p>{row.severity && <p><span className="block text-xs font-bold text-navy/55">Severity</span>{row.severity} / 4</p>}<p><span className="block text-xs font-bold text-navy/55">Submitted by</span>Traffic Police</p></div>
             {row.note && <p className="mt-3 rounded-lg bg-ivory-200/70 p-3 text-sm">{row.note}</p>}
             {row.review_note && <p className="mt-2 text-sm text-navy/70">Review note: {row.review_note}</p>}
+            {reviewScores[row.id] && <p role="status" className="mt-2 rounded-lg bg-ivory-200/70 p-3 text-sm">
+              {reviewScores[row.id].decision === 'confirm'
+                ? `Confirmed. Live score ${reviewScores[row.id].before?.toFixed(1) ?? '—'} → ${reviewScores[row.id].after?.toFixed(1) ?? '—'}.`
+                : 'Rejected reports no longer affect the score.'}
+            </p>}
             {row.status === 'pending' && <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto]"><label className="text-xs font-semibold text-navy/70">Reason if rejecting<textarea value={rejectNotes[row.id] ?? ''} onChange={(e) => setRejectNotes((v) => ({ ...v, [row.id]: e.target.value }))} maxLength={1000} rows={2} className="mt-1 block w-full rounded-lg border border-navy/20 px-3 py-2 text-sm" /></label><button type="button" disabled={busyId === row.id} onClick={() => void review(row, 'confirm')} className="min-h-11 self-end rounded-lg bg-teal px-4 font-bold text-white disabled:opacity-50">{busyId === row.id ? 'Saving…' : 'Confirm report'}</button><button type="button" disabled={busyId === row.id || !(rejectNotes[row.id] ?? '').trim()} onClick={() => void review(row, 'reject')} className="min-h-11 self-end rounded-lg border border-brick/30 px-4 font-bold text-brick disabled:opacity-40">Reject</button></div>}
           </Card>)}
         </div>

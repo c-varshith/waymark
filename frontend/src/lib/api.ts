@@ -239,6 +239,70 @@ export const getBlob = async (path: string, signal?: AbortSignal): Promise<Blob>
 
 const SSE_TYPES = ['start', 'token', 'card', 'done', 'error']
 
+export interface ServerEvent {
+  id: number | null
+  event: string
+  data: Record<string, unknown>
+}
+
+/** GET + ReadableStream client for server-pushed events. Leaves the chat POST SSE API unchanged. */
+export async function openEventStream(
+  path: string,
+  onEvent: (event: ServerEvent) => void,
+  options: { signal?: AbortSignal; lastEventId?: number | null; allowedEvents?: readonly string[] },
+): Promise<void> {
+  const allowedEvents = options.allowedEvents ?? SSE_TYPES
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  if (authToken) headers.Authorization = `Bearer ${authToken}`
+  if (options.lastEventId != null) headers['Last-Event-ID'] = String(options.lastEventId)
+  let response: Response
+  try {
+    response = await fetch(buildUrl(path), { method: 'GET', headers, signal: options.signal, cache: 'no-store' })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new ApiError(NETWORK_MESSAGE, 0)
+  }
+  if (!response.ok) throw await errorFromResponse(response)
+  if (!response.body) throw new ApiError('The live update stream did not provide a readable body.', 502)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const parse = (block: string) => {
+    let id: number | null = null
+    let event = 'message'
+    let data = ''
+    for (const line of block.split('\n')) {
+      if (line.startsWith(':')) continue
+      if (line.startsWith('id:')) {
+        const value = Number(line.slice(3).trim())
+        if (Number.isSafeInteger(value)) id = value
+      } else if (line.startsWith('event:')) event = line.slice(6).trim()
+      else if (line.startsWith('data:')) data += `${data ? '\n' : ''}${line.slice(5).trimStart()}`
+    }
+    if (!data || !allowedEvents.includes(event)) return
+    try {
+      const parsed: unknown = JSON.parse(data)
+      if (isRec(parsed)) onEvent({ id, event, data: parsed })
+    } catch { /* malformed event frames are ignored */ }
+  }
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        parse(buffer.slice(0, boundary))
+        buffer = buffer.slice(boundary + 2)
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+    if (buffer.trim()) parse(buffer)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 /** Parses one text/event-stream block into an event. Unknown or malformed events are skipped. */
 function parseSseBlock(block: string): ChatEvent | null {
   let data = ''
@@ -330,6 +394,22 @@ export interface CellLite {
   measures: CellMeasureBrief[]
 }
 
+export interface LiveOverlay {
+  cell_id: string
+  risk_score: number
+  live_risk_score: number
+  active_incident_count: number
+  incident_overlay_points: number
+}
+
+export interface LiveSnapshot {
+  version: number
+  scored_at: string
+  model_version: string | null
+  context_source: string
+  overlays: LiveOverlay[]
+}
+
 export interface ShapRow {
   feature: string
   feature_value: number | string | null
@@ -370,12 +450,68 @@ export interface PredictionOverrides {
   low_visibility?: boolean
 }
 
+export interface LiveConditionContext {
+  status: 'ok' | 'stale' | 'unavailable'
+  source: string
+  scope: string
+  observed_at: string | null
+  fetched_at: string | null
+  age_seconds: number | null
+  active_conditions: Array<'rain' | 'night' | 'rush'>
+  raw_readings: { precipitation_mm?: number; weather_code?: number; is_day?: number }
+  thresholds: { rain_mm: number; rain_exit_mm: number; rain_exit_polls: number; rush_windows: number[][]; timezone: string }
+  caveat: string
+}
+
+export interface LiveTrafficCell {
+  cell_id: string
+  bucket: 'free' | 'moderate' | 'heavy'
+  observed_at: string
+  road_closure: boolean
+  status: 'ok' | 'stale'
+}
+
+export interface LiveTraffic {
+  status: 'ok' | 'stale' | 'unavailable' | 'budget_reached'
+  source: string
+  attribution: string
+  cells: LiveTrafficCell[]
+  watch_cells: string[]
+  observed_at: string | null
+  requests_today: number
+  requests_month: number
+  daily_cap: number
+  monthly_cap: number
+  score_effect: false
+  error: string | null
+}
+
+export interface ModelHealth {
+  model_loaded: boolean
+  condition_lift_enabled: boolean
+  condition_lift_version: string | null
+  condition_lift_applied: boolean
+}
+
+export interface PredictionAdjustment {
+  kind: string
+  multiplier?: number | null
+  points?: number | null
+  reason: string
+  source: string
+  observed_at?: string | null
+}
+
 export interface LivePrediction {
   cell_id: string
   model_version?: string
   scored_at?: string
   context_source?: 'baseline' | 'scenario' | 'live'
   stale_after_seconds?: number
+  adjustments?: PredictionAdjustment[]
+  condition_multiplier?: number
+  active_conditions?: Array<'rain' | 'night' | 'rush'>
+  context?: LiveConditionContext | null
   risk_probability: number
   /** Percentile-style model score, 0-100. */
   risk_score: number
@@ -384,6 +520,11 @@ export interface LivePrediction {
   confidence: Confidence
   active_incident_count: number
   incident_overlay_points: number
+  overlay_params?: {
+    half_life_minutes: number
+    status_weights: Record<string, number>
+    min_effective_points: number
+  }
   shap_contributors: Array<{
     feature: string
     label: string
@@ -397,6 +538,11 @@ export interface LivePrediction {
 export interface LiveIncidentResponse {
   incident: IncidentReport
   prediction: LivePrediction
+}
+
+export interface IncidentReviewResponse extends IncidentReport {
+  live_score_before: number | null
+  live_score_after: number | null
 }
 
 export type CheckStatus = 'PASS' | 'WARN' | 'FAIL'
@@ -594,12 +740,28 @@ function toLivePrediction(raw: unknown): LivePrediction {
     context_source: raw.context_source === 'baseline' || raw.context_source === 'scenario' || raw.context_source === 'live'
       ? raw.context_source : undefined,
     stale_after_seconds: num(raw.stale_after_seconds) ?? undefined,
+    adjustments: Array.isArray(raw.adjustments) ? raw.adjustments.flatMap((value) => {
+      if (!isRec(value)) return []
+      return [{ kind: str(value.kind), multiplier: num(value.multiplier), points: num(value.points),
+        reason: str(value.reason), source: str(value.source), observed_at: typeof value.observed_at === 'string' ? value.observed_at : null }]
+    }) : [],
+    condition_multiplier: num(raw.condition_multiplier) ?? 1,
+    active_conditions: Array.isArray(raw.active_conditions) ? raw.active_conditions.filter((v): v is 'rain' | 'night' | 'rush' => v === 'rain' || v === 'night' || v === 'rush') : [],
     risk_probability,
     risk_score,
     live_risk_score,
     confidence: str(raw.confidence, 'Low') as Confidence,
     active_incident_count: num(raw.active_incident_count) ?? 0,
     incident_overlay_points: num(raw.incident_overlay_points) ?? 0,
+    overlay_params: isRec(raw.overlay_params) ? {
+      half_life_minutes: num(raw.overlay_params.half_life_minutes) ?? 120,
+      status_weights: isRec(raw.overlay_params.status_weights)
+        ? Object.fromEntries(Object.entries(raw.overlay_params.status_weights).flatMap(([key, value]) => {
+            const parsed = num(value)
+            return parsed === null ? [] : [[key, parsed]]
+          })) : {},
+      min_effective_points: num(raw.overlay_params.min_effective_points) ?? 1,
+    } : undefined,
     shap_contributors: contributors,
   }
 }
@@ -608,6 +770,13 @@ export function parseLiveIncidentResponse(raw: unknown): LiveIncidentResponse {
   if (!isRec(raw) || !isRec(raw.incident)) throw new ApiError('The server sent an unexpected live incident response.', 502)
   const incident = toIncidentReport(raw.incident)
   return { incident, prediction: toLivePrediction(raw.prediction) }
+}
+
+export function parseIncidentReviewResponse(raw: unknown): IncidentReviewResponse {
+  if (!isRec(raw)) throw new ApiError('The server sent an unexpected incident review response.', 502)
+  const incident = toIncidentReport(raw)
+  const obj: Rec = raw
+  return { ...incident, live_score_before: num(obj.live_score_before), live_score_after: num(obj.live_score_after) }
 }
 
 function toValidation(raw: unknown): Validation {
@@ -758,6 +927,21 @@ export interface PlaceSearchItem {
 }
 
 export const api = {
+  liveSnapshot: async (signal?: AbortSignal): Promise<LiveSnapshot> => {
+    const raw = await getJson('/api/live/snapshot', undefined, signal)
+    const obj = isRec(raw) ? raw : {}
+    const overlays = unwrapList(obj.overlays, ['overlays']).flatMap((o) => {
+      const id = str(o.cell_id)
+      const risk = num(o.risk_score)
+      const live = num(o.live_risk_score)
+      const count = num(o.active_incident_count)
+      const points = num(o.incident_overlay_points)
+      return id && risk !== null && live !== null && count !== null && points !== null
+        ? [{ cell_id: id, risk_score: risk, live_risk_score: live, active_incident_count: count, incident_overlay_points: points }]
+        : []
+    })
+    return { version: num(obj.version) ?? 0, scored_at: str(obj.scored_at), model_version: obj.model_version == null ? null : str(obj.model_version), context_source: str(obj.context_source), overlays }
+  },
   /** Real crash points inside a map view; bbox = south,west,north,east. */
   crashes: async (bbox: string, signal?: AbortSignal): Promise<CrashResult> => {
     const raw = await getJson('/api/crashes', { bbox, limit: 3000 }, signal)
@@ -790,6 +974,17 @@ export const api = {
 
   health: (signal?: AbortSignal) => getJson('/api/health', undefined, signal),
 
+  modelHealth: async (signal?: AbortSignal): Promise<ModelHealth> => {
+    const raw = await getJson('/api/health/model', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected model status response.', 502)
+    return {
+      model_loaded: bool(raw.model_loaded),
+      condition_lift_enabled: bool(raw.condition_lift_enabled),
+      condition_lift_version: typeof raw.condition_lift_version === 'string' ? raw.condition_lift_version : null,
+      condition_lift_applied: bool(raw.condition_lift_applied),
+    }
+  },
+
   summary: async (signal?: AbortSignal) => toSummary(await getJson('/api/summary', undefined, signal)),
 
   /** Tries a large limit first, then falls back if the backend caps it. */
@@ -819,11 +1014,14 @@ export const api = {
   predict: async (cellId: string, overrides: PredictionOverrides = {}, signal?: AbortSignal): Promise<LivePrediction> =>
     toLivePrediction(await postJson('/api/predict', { cell_id: cellId, overrides }, signal)),
 
-  predictBatch: async (cellIds: string[], overrides: PredictionOverrides = {}, signal?: AbortSignal): Promise<LivePrediction[]> => {
+  predictLive: async (cellId: string, signal?: AbortSignal): Promise<LivePrediction> =>
+    toLivePrediction(await postJson('/api/predict', { cell_id: cellId, use_live_context: true }, signal)),
+
+  predictBatch: async (cellIds: string[], overrides: PredictionOverrides = {}, signal?: AbortSignal, useLiveContext = false): Promise<LivePrediction[]> => {
     if (!cellIds.length) return []
     const predictions: LivePrediction[] = []
     for (let offset = 0; offset < cellIds.length; offset += 10000) {
-      const raw = await postJson('/api/predict/batch', { cell_ids: cellIds.slice(offset, offset + 10000), overrides }, signal)
+      const raw = await postJson('/api/predict/batch', { cell_ids: cellIds.slice(offset, offset + 10000), overrides, use_live_context: useLiveContext }, signal)
       const envelope = isRec(raw) ? raw : {}
       predictions.push(...unwrapList(raw, ['items']).map((item) => {
         if (!isRec(item)) return toLivePrediction(item)
@@ -834,6 +1032,50 @@ export const api = {
     }
     return predictions
   },
+
+  liveContext: async (signal?: AbortSignal): Promise<LiveConditionContext> => {
+    const raw = await getJson('/api/live/context', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected live context response.', 502)
+    const status = raw.status === 'ok' || raw.status === 'stale' ? raw.status : 'unavailable'
+    const readings = isRec(raw.raw_readings) ? raw.raw_readings : {}
+    const thresholds = isRec(raw.thresholds) ? raw.thresholds : {}
+    const conditions = Array.isArray(raw.active_conditions) ? raw.active_conditions.filter((v): v is 'rain' | 'night' | 'rush' => v === 'rain' || v === 'night' || v === 'rush') : []
+    return {
+      status, source: str(raw.source, 'Open-Meteo'), scope: str(raw.scope),
+      observed_at: typeof raw.observed_at === 'string' ? raw.observed_at : null,
+      fetched_at: typeof raw.fetched_at === 'string' ? raw.fetched_at : null,
+      age_seconds: num(raw.age_seconds), active_conditions: conditions,
+      raw_readings: { precipitation_mm: num(readings.precipitation_mm) ?? undefined, weather_code: num(readings.weather_code) ?? undefined, is_day: num(readings.is_day) ?? undefined },
+      thresholds: { rain_mm: num(thresholds.rain_mm) ?? 1, rain_exit_mm: num(thresholds.rain_exit_mm) ?? 0.5, rain_exit_polls: num(thresholds.rain_exit_polls) ?? 2,
+        rush_windows: Array.isArray(thresholds.rush_windows) ? thresholds.rush_windows as number[][] : [], timezone: str(thresholds.timezone, 'America/Chicago') },
+      caveat: str(raw.caveat),
+    }
+  },
+
+  liveTraffic: async (signal?: AbortSignal): Promise<LiveTraffic> => {
+    const raw = await getJson('/api/live/traffic', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected traffic response.', 502)
+    const status = raw.status === 'ok' || raw.status === 'stale' || raw.status === 'budget_reached' ? raw.status : 'unavailable'
+    const cells = Array.isArray(raw.cells) ? raw.cells.flatMap((item) => {
+      if (!isRec(item) || typeof item.cell_id !== 'string' || typeof item.observed_at !== 'string') return []
+      if (item.bucket !== 'free' && item.bucket !== 'moderate' && item.bucket !== 'heavy') return []
+      const bucket: LiveTrafficCell['bucket'] = item.bucket
+      return [{ cell_id: item.cell_id, bucket, observed_at: item.observed_at,
+        road_closure: bool(item.road_closure),
+        status: item.status === 'stale' ? 'stale' as const : 'ok' as const }]
+    }) : []
+    return {
+      status, source: str(raw.source, 'Traffic provider'), attribution: str(raw.attribution), cells,
+      watch_cells: Array.isArray(raw.watch_cells) ? raw.watch_cells.filter((id): id is string => typeof id === 'string') : [],
+      observed_at: typeof raw.observed_at === 'string' ? raw.observed_at : null,
+      requests_today: num(raw.requests_today) ?? 0, requests_month: num(raw.requests_month) ?? 0,
+      daily_cap: num(raw.daily_cap) ?? 0, monthly_cap: num(raw.monthly_cap) ?? 0,
+      score_effect: false,
+      error: typeof raw.error === 'string' ? raw.error : null,
+    }
+  },
+
+  watchTrafficCell: (cell_id: string) => postJson('/api/live/traffic/watch', { cell_id }),
 
   places: async (query: string, signal?: AbortSignal, prefix = false): Promise<PlaceSearchItem[]> => {
     const raw = await getJson('/api/places', { q: query, prefix }, signal)

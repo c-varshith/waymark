@@ -43,7 +43,8 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(name, value)
 
 
-_load_env_file(ROOT / ".env")
+if os.getenv("WAYMARK_DISABLE_DOTENV", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    _load_env_file(ROOT / ".env")
 
 
 def _int(name: str, default: int) -> int:

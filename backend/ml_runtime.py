@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -15,11 +17,14 @@ import pandas as pd
 import shap
 
 from .services import FEATURE_LABELS
+from .incident_overlay import DEFAULT_CONFIG, aggregate_details, effective_points, overlay_params
+from .realtime_config import SWEEP_PUBLISH_DELTA
+from . import realtime_config as config
 
 MAX_SHAP_CONTRIBUTORS = 6
 ACTIVE_INCIDENT_STATUSES = frozenset({"pending", "confirmed"})
-CRASH_OVERLAY_POINTS = 20.0
-NEAR_MISS_OVERLAY_POINTS = 10.0
+CONDITIONS = ("rain", "night", "rush")
+log = logging.getLogger("waymark.ml")
 
 
 class MLRuntimeError(RuntimeError):
@@ -30,7 +35,9 @@ class InferenceRuntime:
     """Loaded model, explainer, feature vectors and process-local live incident state."""
 
     def __init__(self, bundle: dict[str, Any], schema: dict[str, Any], explainer: Any,
-                 features: pd.DataFrame, disagreement_threshold: float):
+                 features: pd.DataFrame, disagreement_threshold: float,
+                 condition_lift: dict[str, Any] | None = None,
+                 condition_lift_version: str | None = None):
         self.models = bundle["models"]
         self.feature_names = list(schema["feature_columns"])
         self.probability_reference = np.asarray(bundle["probability_reference"], dtype=float)
@@ -41,11 +48,25 @@ class InferenceRuntime:
         self.schema_version = schema.get("schema_version")
         self.model_version: str | None = None
         self._cell_positions = {cell_id: i for i, cell_id in enumerate(features.index)}
-        self._active_incidents: dict[int, tuple[str, str]] = {}
+        self._active_incidents: dict[int, tuple[str, str, str, datetime, str | None]] = {}
+        self._last_published_overlay_points: dict[str, float] = {}
         self._lock = threading.RLock()
-        self._score_cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray, list[str]]] = OrderedDict()
+        self._score_cache: OrderedDict[
+            tuple[Any, ...], tuple[np.ndarray, np.ndarray, list[str], np.ndarray]
+        ] = OrderedDict()
         self._cache_lock = threading.RLock()
         self._score_cache_limit = 8
+        self.condition_lift_enabled = False
+        self.condition_lift_version: str | None = None
+        self.condition_citywide: dict[str, dict[str, float]] = {}
+        self.condition_lift_cells: dict[str, dict[str, Any]] = {}
+        self._condition_multiplier_vectors = {name: np.ones(len(features), dtype=float) for name in CONDITIONS}
+        if condition_lift is not None:
+            self._load_condition_lift(condition_lift, condition_lift_version)
+
+    @staticmethod
+    def overlay_params() -> dict[str, Any]:
+        return overlay_params(DEFAULT_CONFIG)
 
     @classmethod
     def load(cls, artifact_dir: Path | str, feature_store_path: Path | str) -> "InferenceRuntime":
@@ -113,9 +134,49 @@ class InferenceRuntime:
         except Exception as exc:
             raise MLRuntimeError(f"Model cannot score the feature store: {exc}") from exc
         disagreement_threshold = float(np.quantile(member_probs.std(axis=1), 0.75))
-        runtime = cls(bundle, schema, explainer, frame, disagreement_threshold)
+        lift_path = artifact_dir / "condition_lift.json"
+        lift_document = None
+        lift_version = None
+        if lift_path.is_file():
+            try:
+                lift_bytes = lift_path.read_bytes()
+                lift_document = json.loads(lift_bytes)
+                lift_version = "lift-" + hashlib.sha256(lift_bytes).hexdigest()[:8]
+            except (OSError, ValueError) as exc:
+                log.warning("Condition lift is disabled because its artifact could not be read: %s", exc)
+        runtime = cls(bundle, schema, explainer, frame, disagreement_threshold,
+                      lift_document, lift_version)
         runtime.model_version = "lgbm3-" + hashlib.sha256(model_path.read_bytes()).hexdigest()[:8]
         return runtime
+
+    def _load_condition_lift(self, document: dict[str, Any], version: str | None) -> None:
+        if document.get("schema_version") != 1 or not isinstance(document.get("cells"), dict):
+            raise MLRuntimeError("Condition-lift artifact has an unsupported schema.")
+        citywide = document.get("citywide")
+        if not isinstance(citywide, dict) or any(name not in citywide for name in CONDITIONS):
+            raise MLRuntimeError("Condition-lift artifact is missing citywide condition shares.")
+        vectors = {name: np.ones(len(self.features), dtype=float) for name in CONDITIONS}
+        cells = document["cells"]
+        for cell_id, entry in cells.items():
+            position = self._cell_positions.get(str(cell_id))
+            if position is None or not isinstance(entry, dict):
+                continue
+            conditions = entry.get("conditions", {})
+            if not isinstance(conditions, dict):
+                continue
+            for name in CONDITIONS:
+                condition = conditions.get(name, {})
+                if not isinstance(condition, dict) or not condition.get("prone"):
+                    continue
+                multiplier = float(condition.get("multiplier", 1.0))
+                if not np.isfinite(multiplier) or multiplier < 1.0:
+                    raise MLRuntimeError("Condition-lift multiplier must be finite and at least one.")
+                vectors[name][position] = min(config.LIFT_CAP_PER_CONDITION, multiplier)
+        self.condition_lift_cells = cells
+        self.condition_citywide = citywide
+        self._condition_multiplier_vectors = vectors
+        self.condition_lift_version = version
+        self.condition_lift_enabled = True
 
     def resolve_cell(self, cell_id: str | None = None, lat: float | None = None,
                      lng: float | None = None) -> str:
@@ -172,8 +233,40 @@ class InferenceRuntime:
                 getattr(overrides, "lighting", None),
                 getattr(overrides, "low_visibility", None))
 
-    def _model_scores(self, overrides: Any | None) -> tuple[np.ndarray, np.ndarray, list[str]]:
-        key = self._override_key(overrides)
+    @staticmethod
+    def _active_condition_key(active_conditions: Iterable[str] | None) -> tuple[str, ...]:
+        active = tuple(sorted(set(active_conditions or ())))
+        if set(active) - set(CONDITIONS):
+            raise ValueError("active_conditions may contain only rain, night, and rush.")
+        return active
+
+    def _condition_multiplier_vector(self, active_conditions: tuple[str, ...]) -> np.ndarray:
+        if (not self.condition_lift_enabled or not config.CONDITION_LIFT_APPLIES_TO_RANKING
+                or not active_conditions):
+            return np.ones(len(self.features), dtype=float)
+        multiplier = np.ones(len(self.features), dtype=float)
+        for condition in active_conditions:
+            multiplier *= self._condition_multiplier_vectors[condition]
+        return np.minimum(multiplier, config.LIFT_CAP_TOTAL)
+
+    def _condition_multiplier_for_cell(self, cell_id: str, active_conditions: tuple[str, ...]) -> float:
+        if not self.condition_lift_enabled or not config.CONDITION_LIFT_APPLIES_TO_RANKING:
+            return 1.0
+        cell = self.condition_lift_cells.get(cell_id, {})
+        condition_rows = cell.get("conditions", {})
+        multiplier = 1.0
+        for condition in active_conditions:
+            row = condition_rows.get(condition, {}) if isinstance(condition_rows, dict) else {}
+            if row.get("prone"):
+                multiplier *= min(config.LIFT_CAP_PER_CONDITION, float(row.get("multiplier", 1.0)))
+        return min(multiplier, config.LIFT_CAP_TOTAL)
+
+    def _model_scores(self, overrides: Any | None,
+                      active_conditions: Iterable[str] | None = None
+                      ) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
+        active = self._active_condition_key(active_conditions)
+        base_key = self._override_key(overrides)
+        key = base_key if not active else (base_key, active)
         with self._cache_lock:
             cached = self._score_cache.get(key)
             if cached is not None:
@@ -186,12 +279,14 @@ class InferenceRuntime:
         ])
         if not np.isfinite(member_probs).all():
             raise ValueError("Model returned a non-finite probability.")
-        probabilities = member_probs.mean(axis=1)
+        model_probabilities = member_probs.mean(axis=1)
+        multiplier = self._condition_multiplier_vector(active)
+        probabilities = np.minimum(1.0, model_probabilities * multiplier)
         disagreement = member_probs.std(axis=1)
         risk_scores = self._rank_scores(probabilities, self.probability_reference)
         confidence = self._confidence_scores(self.features["n_acc"].to_numpy(dtype=float),
                                              disagreement, self.disagreement_threshold).tolist()
-        value = (probabilities, risk_scores, confidence)
+        value = (probabilities, risk_scores, confidence, multiplier)
         with self._cache_lock:
             existing = self._score_cache.get(key)
             if existing is not None:
@@ -212,33 +307,55 @@ class InferenceRuntime:
             level = max(level - 1, 0)
         return {0: "Low", 1: "Medium", 2: "High"}[level]
 
-    def _incident_overlay_map(self) -> dict[str, tuple[int, float]]:
+    def _incident_overlay_map(self, now: datetime | None = None) -> dict[str, tuple[float, int, int, float]]:
+        scored_at = now or datetime.now(timezone.utc)
         with self._lock:
             snapshot = tuple(self._active_incidents.values())
-        totals: dict[str, tuple[int, float]] = {}
-        for cell_id, kind in snapshot:
-            count, points = totals.get(cell_id, (0, 0.0))
-            points += CRASH_OVERLAY_POINTS if kind == "crash" else NEAR_MISS_OVERLAY_POINTS
-            totals[cell_id] = (count + 1, min(points, 100.0))
-        return totals
+        items = ({"cell_id": cell_id, "kind": kind, "status": status,
+                  "occurred_at": occurred_at, "reporter_id": reporter_id}
+                 for cell_id, kind, status, occurred_at, reporter_id in snapshot)
+        return aggregate_details(items, scored_at)
 
-    def _incident_overlay(self, cell_id: str) -> tuple[int, float]:
-        return self._incident_overlay_map().get(cell_id, (0, 0.0))
+    def _incident_overlay(self, cell_id: str, now: datetime | None = None) -> tuple[int, float, int, float]:
+        points, count, independent, bonus = self._incident_overlay_map(now).get(cell_id, (0.0, 0, 0, 0.0))
+        return count, points, independent, bonus
 
-    def decorate_prediction(self, prediction: dict[str, Any]) -> dict[str, Any]:
+    def decorate_prediction(self, prediction: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         """Refresh only the incident overlay without rerunning model inference or SHAP."""
         result = dict(prediction)
-        count, points = self._incident_overlay(str(result["cell_id"]))
+        scored_at = now or datetime.now(timezone.utc)
+        count, points, independent, bonus = self._incident_overlay(str(result["cell_id"]), scored_at)
         result["active_incident_count"] = count
         result["incident_overlay_points"] = points
         result["live_risk_score"] = min(100.0, float(result["risk_score"]) + points)
+        result["overlay_params"] = overlay_params()
+        result["corroboration"] = {"report_count": count, "independent_reporters": independent,
+                                   "bonus_points": bonus}
         return result
 
     def _serialize_prediction(self, cell_id: str, frame: pd.DataFrame, probabilities: np.ndarray,
-                              disagreement: float, include_shap: bool) -> dict[str, Any]:
+                              disagreement: float, include_shap: bool,
+                              now: datetime | None = None, *,
+                              active_conditions: tuple[str, ...] = (),
+                              condition_source: str = "historical Open-Meteo archive",
+                              condition_observed_at: str | None = None,
+                              condition_multiplier: float = 1.0) -> dict[str, Any]:
         probability = float(probabilities.mean())
         risk_score = self._rank_score(probability, self.probability_reference)
-        incident_count, overlay_points = self._incident_overlay(cell_id)
+        incident_count, overlay_points, independent_reporters, corroboration_bonus = self._incident_overlay(cell_id, now)
+        adjustments = self._condition_adjustments(
+            cell_id, active_conditions, condition_source, condition_observed_at)
+        if overlay_points > 0:
+            adjustments.append({
+                "kind": "incident_overlay",
+                "points": overlay_points,
+                "reason": (f"+{corroboration_bonus:.1f} points from {incident_count} reports "
+                           f"({independent_reporters} independent); incident reports are status-weighted and decayed."
+                           if independent_reporters else
+                           f"{incident_count} active incident report(s), status-weighted and decayed."),
+                "source": "cell-level incident overlay",
+                "observed_at": (now or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z"),
+            })
         output: dict[str, Any] = {
             "cell_id": cell_id,
             "risk_probability": probability,
@@ -247,7 +364,13 @@ class InferenceRuntime:
             "confidence": self._confidence(float(frame.iloc[0]["n_acc"]), disagreement),
             "active_incident_count": incident_count,
             "incident_overlay_points": overlay_points,
+            "corroboration": {"report_count": incident_count,
+                              "independent_reporters": independent_reporters,
+                              "bonus_points": corroboration_bonus},
+            "condition_multiplier": condition_multiplier,
+            "adjustments": adjustments,
             "shap_contributors": [],
+            "overlay_params": overlay_params(),
         }
         if include_shap:
             values = self.explainer.shap_values(frame[self.feature_names])
@@ -271,59 +394,184 @@ class InferenceRuntime:
             ]
         return output
 
-    def predict(self, cell_id: str, overrides: Any | None = None, include_shap: bool = True) -> dict[str, Any]:
+    def _condition_adjustments(self, cell_id: str, active_conditions: tuple[str, ...],
+                               source: str, observed_at: str | None) -> list[dict[str, Any]]:
+        if not active_conditions:
+            return []
+        cell = self.condition_lift_cells.get(cell_id, {})
+        n = int(cell.get("n", 0))
+        condition_rows = cell.get("conditions", {})
+        adjustments = []
+        raw_product = 1.0
+        for condition in active_conditions:
+            row = condition_rows.get(condition, {}) if isinstance(condition_rows, dict) else {}
+            city_share = float(self.condition_citywide.get(condition, {}).get("p", 0.0))
+            label = {"rain": "rain", "night": "night", "rush": "weekday rush hours"}[condition]
+            has_evidence = self.condition_lift_enabled and bool(row.get("prone"))
+            ranking_applied = has_evidence and config.CONDITION_LIFT_APPLIES_TO_RANKING
+            if has_evidence:
+                multiplier = float(row["multiplier"])
+                raw_product *= multiplier
+                k = int(row.get("k", 0))
+                share = (k / n) if n else 0.0
+                evidence = (f"{share:.0%} of this cell's {n} recorded crashes happened in {label}, "
+                           f"versus {city_share:.0%} citywide; historically more crashes per hour in this condition.")
+            elif row:
+                evidence = (f"{label.capitalize()} is active. This cell does not meet the condition-lift evidence "
+                            "threshold, so the condition does not change its score or ranking.")
+            else:
+                evidence = (f"{label.capitalize()} is active. Per-cell condition-lift evidence is unavailable; "
+                            "the condition does not change this cell's score or ranking.")
+            if not ranking_applied:
+                evidence += " Context only, not a validated improvement; no score or ranking change is applied."
+            adjustments.append({
+                "kind": f"{condition}_{'lift' if ranking_applied else 'context'}",
+                **({"multiplier": multiplier} if ranking_applied else {}),
+                "reason": evidence,
+                "source": source,
+                "observed_at": observed_at,
+            })
+        if config.CONDITION_LIFT_APPLIES_TO_RANKING and raw_product > config.LIFT_CAP_TOTAL:
+            adjustments.append({
+                "kind": "condition_lift_cap",
+                "multiplier": config.LIFT_CAP_TOTAL / raw_product,
+                "reason": f"Combined condition multiplier is bounded at {config.LIFT_CAP_TOTAL:.2f}.",
+                "source": source,
+                "observed_at": observed_at,
+            })
+        return adjustments
+
+    def predict(self, cell_id: str, overrides: Any | None = None, include_shap: bool = True,
+                *, now: datetime | None = None,
+                active_conditions: Iterable[str] | None = None,
+                condition_source: str = "historical Open-Meteo archive",
+                condition_observed_at: str | None = None) -> dict[str, Any]:
         frame = self._apply_overrides(self.features.loc[[cell_id]], overrides)
+        scored_at = now or datetime.now(timezone.utc)
         try:
+            active = self._active_condition_key(active_conditions)
             member_probs = np.asarray([m.predict_proba(frame[self.feature_names])[0, 1] for m in self.models], dtype=float)
             if not np.isfinite(member_probs).all():
                 raise ValueError("Model returned a non-finite probability.")
-            return self._serialize_prediction(cell_id, frame, member_probs, float(member_probs.std()), include_shap)
+            condition_multiplier = self._condition_multiplier_for_cell(cell_id, active)
+            probability = min(1.0, float(member_probs.mean()) * condition_multiplier)
+            return self._serialize_prediction(
+                cell_id, frame, np.asarray([probability]), float(member_probs.std()), include_shap, scored_at,
+                active_conditions=active, condition_source=condition_source,
+                condition_observed_at=condition_observed_at,
+                condition_multiplier=condition_multiplier)
         except Exception as exc:
             raise MLRuntimeError(f"Live prediction failed: {exc}") from exc
 
-    def predict_batch(self, cell_ids: Iterable[str], overrides: Any | None = None) -> list[dict[str, Any]]:
+    def predict_batch(self, cell_ids: Iterable[str], overrides: Any | None = None,
+                      *, now: datetime | None = None,
+                      active_conditions: Iterable[str] | None = None) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(cell_ids))
+        scored_at = now or datetime.now(timezone.utc)
         unknown = [cid for cid in ids if cid not in self._cell_positions]
         if unknown:
             raise KeyError(unknown[0])
         try:
-            probabilities, risk_scores, confidence = self._model_scores(overrides)
+            probabilities, risk_scores, confidence, multipliers = self._model_scores(overrides, active_conditions)
             positions = [self._cell_positions[cid] for cid in ids]
             probability_values = probabilities[positions].tolist()
             risk_values = risk_scores[positions].tolist()
             confidence_values = [confidence[i] for i in positions]
-            overlays = self._incident_overlay_map()
+            multiplier_values = multipliers[positions].tolist()
+            overlays = self._incident_overlay_map(scored_at)
             incident_counts: list[int] = []
             overlay_points: list[float] = []
+            independent_reporters: list[int] = []
+            corroboration_bonuses: list[float] = []
             for cell_id in ids:
-                count, points = overlays.get(cell_id, (0, 0.0))
+                points, count, independent, bonus = overlays.get(cell_id, (0.0, 0, 0, 0.0))
                 incident_counts.append(count)
                 overlay_points.append(points)
+                independent_reporters.append(independent)
+                corroboration_bonuses.append(bonus)
             live_values = [min(100.0, risk + points) for risk, points in zip(risk_values, overlay_points)]
             return [
                 {"cell_id": cell_id, "risk_probability": probability, "risk_score": risk,
                  "live_risk_score": live, "confidence": certainty,
                  "active_incident_count": incident_count, "incident_overlay_points": points,
+                 "corroboration": {"report_count": incident_count,
+                                   "independent_reporters": independent_count,
+                                   "bonus_points": bonus_points},
+                 "condition_multiplier": multiplier,
                  "shap_contributors": []}
-                for cell_id, probability, risk, live, certainty, incident_count, points
+                for cell_id, probability, risk, live, certainty, incident_count, points,
+                    independent_count, bonus_points, multiplier
                 in zip(ids, probability_values, risk_values, live_values, confidence_values,
-                       incident_counts, overlay_points)
+                       incident_counts, overlay_points, independent_reporters,
+                       corroboration_bonuses, multiplier_values)
             ]
         except Exception as exc:
             raise MLRuntimeError(f"Batch prediction failed: {exc}") from exc
 
-    def activate_incident(self, incident_id: int, cell_id: str, kind: str) -> None:
+    def activate_incident(self, incident_id: int, cell_id: str, kind: str, *,
+                          status: str = "pending", occurred_at: datetime | None = None,
+                          reporter_id: str | None = None) -> None:
+        incident_time = occurred_at or datetime.now(timezone.utc)
         with self._lock:
-            self._active_incidents[int(incident_id)] = (cell_id, kind)
+            self._active_incidents[int(incident_id)] = (cell_id, kind, status, incident_time,
+                                                        str(reporter_id) if reporter_id is not None else None)
+
+    def update_incident_status(self, incident_id: int, status: str) -> None:
+        with self._lock:
+            current = self._active_incidents.get(int(incident_id))
+            if current is None:
+                return
+            if status == "rejected":
+                del self._active_incidents[int(incident_id)]
+                return
+            cell_id, kind, _old_status, occurred_at, reporter_id = current
+            self._active_incidents[int(incident_id)] = (cell_id, kind, status, occurred_at, reporter_id)
 
     def reject_incident(self, incident_id: int) -> None:
-        with self._lock:
-            self._active_incidents.pop(int(incident_id), None)
+        self.update_incident_status(incident_id, "rejected")
 
-    def hydrate_incidents(self, rows: Iterable[Any]) -> None:
+    def active_incident_cell_ids(self) -> list[str]:
+        """Return unique cells with at least one active report for snapshot hydration."""
+        with self._lock:
+            return list(dict.fromkeys(
+                cell_id for cell_id, _kind, status, _occurred_at, _reporter_id in self._active_incidents.values()
+                if status in ACTIVE_INCIDENT_STATUSES
+                if cell_id in self._cell_positions
+            ))
+
+    def hydrate_incidents(self, rows: Iterable[Any], *, now: datetime | None = None) -> None:
+        hydrated_at = now or datetime.now(timezone.utc)
         with self._lock:
             self._active_incidents = {
-                int(row.id): (row.cell_id, row.kind)
+                int(row.id): (row.cell_id, row.kind, row.status, row.occurred_at,
+                              str(getattr(row, "reported_by", None))
+                              if getattr(row, "reported_by", None) is not None else None)
                 for row in rows
                 if row.status in ACTIVE_INCIDENT_STATUSES
+                and effective_points(row.kind, row.status, row.occurred_at, hydrated_at) > 0
             }
+            current = self._incident_overlay_map(hydrated_at)
+            self._last_published_overlay_points = {cell: points for cell, (points, _count, _independent, _bonus) in current.items()}
+
+    def mark_overlay_published(self, cell_id: str, points: float) -> None:
+        with self._lock:
+            self._last_published_overlay_points[cell_id] = float(points)
+
+    def sweep_incidents(self, now: datetime | None = None) -> list[str]:
+        """Expire stale reports and return cells whose published score needs an SSE refresh."""
+        scored_at = now or datetime.now(timezone.utc)
+        with self._lock:
+            expired = [incident_id for incident_id, (_cell, kind, status, occurred, _reporter_id)
+                       in self._active_incidents.items()
+                       if effective_points(kind, status, occurred, scored_at) <= 0]
+            for incident_id in expired:
+                self._active_incidents.pop(incident_id, None)
+            current = self._incident_overlay_map(scored_at)
+            points_by_cell = {cell: points for cell, (points, _count, _independent, _bonus) in current.items()}
+            changed: list[str] = []
+            for cell_id in set(self._last_published_overlay_points) | set(points_by_cell):
+                previous = self._last_published_overlay_points.get(cell_id, 0.0)
+                current_points = points_by_cell.get(cell_id, 0.0)
+                if abs(current_points - previous) >= SWEEP_PUBLISH_DELTA or (previous > 0 and current_points == 0):
+                    changed.append(cell_id)
+            return sorted(changed)

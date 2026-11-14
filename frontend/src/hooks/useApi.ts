@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { DependencyList } from 'react'
 
 interface State<T> {
@@ -36,5 +36,6 @@ export function useApi<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce])
 
-  return { ...state, reload: () => setNonce((n) => n + 1) }
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+  return { ...state, reload }
 }
