@@ -87,7 +87,7 @@ export default function MapPage() {
   const [leftPaneOpen, setLeftPaneOpen] = useState(() => mediaMatches(DESKTOP) && !(selectedId && mediaMatches(NARROW)))
   const [rightPaneOpen, setRightPaneOpen] = useState(true)
 
-  const cellsQ = useApi(api.cells, [])
+  const cellsQ = useApi(api.cells, [], { keepPrevious: true })
   const summaryQ = useApi(api.summary, [])
   const contextQ = useApi(api.liveContext, [])
   const modelHealthQ = useApi(api.modelHealth, [])
@@ -898,7 +898,7 @@ export default function MapPage() {
           </div>
 
           {/* Loading / error / empty states sit in the middle of the visible map. */}
-          {cellsQ.loading && (
+          {cellsQ.loading && !cellsQ.data && (
             <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl border border-navy/10 bg-white/95 px-4 py-2 shadow-card" role="status" aria-live="polite">
               <span className="inline-flex items-center gap-2 whitespace-nowrap text-sm font-semibold text-navy"><span aria-hidden="true" className="h-2.5 w-2.5 animate-pulse rounded-full bg-brass" />Loading map cells…</span>
             </div>

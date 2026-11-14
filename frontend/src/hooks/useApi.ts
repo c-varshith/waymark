@@ -30,7 +30,11 @@ export function useApi<T>(
       })
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
-        setState({ data: null, error: e instanceof Error ? e.message : 'Something went wrong.', loading: false })
+        setState((s) => ({
+          data: keepPrevious ? s.data : null,
+          error: e instanceof Error ? e.message : 'Something went wrong.',
+          loading: false,
+        }))
       })
     return () => ctrl.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
