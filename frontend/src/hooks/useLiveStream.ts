@@ -3,7 +3,7 @@ import { api, openEventStream } from '../lib/api'
 import type { LiveSnapshot, ServerEvent } from '../lib/api'
 import { CLIENT_WATCHDOG_SECONDS, POLL_FALLBACK_SECONDS } from '../lib/realtimeConfig'
 
-const EVENTS = ['incident.created', 'incident.reviewed', 'prediction.updated', 'context.changed', 'resync', 'heartbeat'] as const
+const EVENTS = ['incident.created', 'incident.reviewed', 'prediction.updated', 'context.changed', 'traffic.updated', 'resync', 'heartbeat'] as const
 export type LiveStreamState = 'connecting' | 'live' | 'reconnecting' | 'offline'
 
 export function useLiveStream(onEvent: (event: ServerEvent) => void, onSnapshot: (snapshot: LiveSnapshot) => void) {

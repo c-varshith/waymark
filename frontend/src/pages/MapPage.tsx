@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MapPin, SlidersHorizontal } from 'lucide-react'
-import { MapContainer, TileLayer, ZoomControl } from 'react-leaflet'
+import { CircleMarker, MapContainer, TileLayer, Tooltip, ZoomControl } from 'react-leaflet'
 import { useSearchParams } from 'react-router-dom'
 import { cellToParent, getResolution, gridDisk, latLngToCell } from 'h3-js'
 import 'leaflet/dist/leaflet.css'
@@ -79,6 +79,8 @@ export default function MapPage() {
   const summaryQ = useApi(api.summary, [])
   const contextQ = useApi(api.liveContext, [])
   const modelHealthQ = useApi(api.modelHealth, [])
+  const trafficQ = useApi(api.liveTraffic, [], { keepPrevious: true })
+  const [trafficLayerOn, setTrafficLayerOn] = useState(false)
   const [mapMode, setMapMode] = useState<MapMode>('baseline')
   const [contextRevision, setContextRevision] = useState(0)
   const [lastLivePredictions, setLastLivePredictions] = useState<Map<string, LivePrediction>>(() => new Map())
@@ -442,6 +444,10 @@ export default function MapPage() {
   }, [selectedId, reloadDetail])
   const handleLiveEvent = useCallback((event: ServerEvent) => {
     const cellId = typeof event.data.cell_id === 'string' ? event.data.cell_id : null
+    if (event.event === 'traffic.updated') {
+      trafficQ.reload()
+      return
+    }
     if (event.event === 'prediction.updated' && cellId) {
       if (typeof event.data.scored_at === 'string') setSnapshotScoredAt(event.data.scored_at)
       const count = Number(event.data.active_incident_count) || 0
@@ -487,8 +493,19 @@ export default function MapPage() {
       }, 2000)
       if (selectedId) setIncidentRefreshKey((n) => n + 1)
     }
-  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, contextQ.reload])
+  }, [selectedId, locationAlertsEnabled, locationCellId, reloadDetail, contextQ.reload, trafficQ.reload])
   const liveStream = useLiveStream(handleLiveEvent, applyLiveSnapshot)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') trafficQ.reload()
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [trafficQ.reload])
+
+  useEffect(() => {
+    if (selectedId) void api.watchTrafficCell(selectedId).catch(() => undefined)
+  }, [selectedId])
 
   useEffect(() => () => {
     if (contextRefreshTimer.current !== null) window.clearTimeout(contextRefreshTimer.current)
@@ -689,6 +706,15 @@ export default function MapPage() {
           centerPoints={crashesAvailable === false}
         />
         <CrashLayer enabled={!level.grouped} onAvailable={setCrashesAvailable} cellIds={placeIds ?? highlightIds} satellite={base.name === "Satellite"} />
+        {trafficLayerOn && (trafficQ.data?.status === 'ok' || trafficQ.data?.status === 'stale' || trafficQ.data?.status === 'budget_reached') && trafficQ.data.cells.map((item) => {
+          const cell = cellsById.get(item.cell_id)
+          if (!cell) return null
+          const color = item.bucket === 'heavy' ? '#B83A35' : item.bucket === 'moderate' ? '#C18A2E' : '#218C78'
+          return <CircleMarker key={`traffic-${item.cell_id}`} center={[cell.lat, cell.lng]} radius={item.road_closure ? 11 : 9}
+            pathOptions={{ color: item.road_closure ? '#7F1D1D' : '#ffffff', weight: item.road_closure ? 3 : 2, fillColor: color, fillOpacity: 0.95 }}>
+            <Tooltip direction="top">{item.road_closure ? 'Road closure reported · ' : ''}{item.bucket[0].toUpperCase() + item.bucket.slice(1)} traffic · {item.status === 'stale' ? 'stale · ' : ''}{new Date(item.observed_at).toLocaleTimeString()}</Tooltip>
+          </CircleMarker>
+        })}
         <IncidentLayer enabled={true} pickMode={pickIncidentMode} refreshKey={incidentLayerRefreshKey}
           onPick={(lat, lng) => { if (pickIncidentMode) { setIncidentPoint([lat, lng]); setPickIncidentMode(false) } }} />
         <DriverLayer position={driver.position} source={driver.source} pickMode={pickSimMode} onPick={placeSimLocation} />
@@ -706,6 +732,15 @@ export default function MapPage() {
 
       {/* Map status and details control stay together in the top-right control row. */}
       <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
+        <div className="flex items-center gap-1 rounded-full bg-white/95 p-1 shadow-card">
+          <button type="button" aria-pressed={trafficLayerOn} onClick={() => setTrafficLayerOn((on) => !on)}
+            className={`min-h-9 rounded-full px-3 text-xs font-bold ${trafficLayerOn ? 'bg-navy text-ivory' : 'text-navy hover:bg-ivory-200'}`}>
+            Traffic · display only
+          </button>
+          <span role="status" aria-live="polite" className="px-2 text-[10px] font-semibold text-navy/70">
+            {trafficQ.data?.status === 'ok' ? 'Live' : trafficQ.data?.status === 'stale' ? 'Stale' : trafficQ.data?.status === 'budget_reached' ? 'Budget reached' : 'Unavailable'}
+          </span>
+        </div>
         {mapMode === 'live' && <>
           <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />
           <div role="note" className="rounded-full border border-navy/15 bg-white/95 px-3 py-1.5 text-[11px] font-bold text-navy shadow-card">

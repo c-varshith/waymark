@@ -45,6 +45,15 @@ def _publish_best_effort(request: Request, runtime: InferenceRuntime, event: str
     broadcaster = getattr(request.app.state, "broadcaster", None)
     if broadcaster is None:
         return
+    traffic_manager = getattr(request.app.state, "traffic_manager", None)
+    if traffic_manager is not None:
+        try:
+            # Incident cells enter the bounded traffic watch list immediately; review can
+            # also remove a rejected report from the active-priority slots.
+            traffic_manager.configure_watchlist(runtime)
+            traffic_manager.notify_clients_changed()
+        except Exception:
+            log.warning("Could not refresh traffic watch list for cell %s", cell_id, exc_info=True)
     try:
         if event == "incident.created":
             broadcaster.publish(event, payload)

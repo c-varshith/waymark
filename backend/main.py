@@ -26,9 +26,10 @@ from .realtime_config import SWEEP_SECONDS
 from .live_context import LiveContextManager
 from .models_ops import IncidentReport, create_ops_tables
 from .storage import validate_storage_configuration
+from .traffic import ConditionHistoryWriter, TrafficManager
 from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, live_context as live_context_routes,
                      measures, places, realtime, regions, reports, system,
-                     predict, validation, whatif)
+                     predict, traffic as traffic_routes, validation, whatif)
 
 log = logging.getLogger("waymark")
 
@@ -106,9 +107,32 @@ async def lifespan(app: FastAPI):
     live_context = LiveContextManager(broadcaster=broadcaster)
     app.state.live_context = live_context
     context_task = asyncio.create_task(live_context.run(), name="waymark-live-context-poller")
+    traffic_manager = TrafficManager(broadcaster=broadcaster)
+    app.state.traffic_manager = traffic_manager
+    if app.state.ml_runtime is not None:
+        await run_in_threadpool(traffic_manager.configure_watchlist, app.state.ml_runtime)
+    try:
+        await traffic_manager.refresh_usage()
+    except Exception:
+        log.exception("Traffic counters could not be read; disabling provider polling")
+        traffic_manager._budget_reached = True
+    traffic_task = asyncio.create_task(traffic_manager.run(), name="waymark-traffic-poller")
+    history_writer = ConditionHistoryWriter()
+    history_task = asyncio.create_task(
+        history_writer.run(lambda: getattr(app.state, "ml_runtime", None),
+                           lambda: getattr(app.state, "live_context", None),
+                           lambda: traffic_manager),
+        name="waymark-condition-history-writer")
     try:
         yield
     finally:
+        for task in (history_task, traffic_task):
+            task.cancel()
+        for task in (history_task, traffic_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         context_task.cancel()
         try:
             await context_task
@@ -129,6 +153,7 @@ app = FastAPI(title="WAYMARK API", version="2.0.0", lifespan=lifespan,
 app.state.ml_runtime = None
 app.state.broadcaster = Broadcaster()
 app.state.live_context = None
+app.state.traffic_manager = None
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)   # the full cell list is ~1.6 MB of JSON
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
@@ -137,7 +162,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
 
 for r in (system.router, cells.router, crashes.router, incidents.router, predict.router, places.router, whatif.router, validation.router, audit.router,
           auth.router, regions.router, reports.router, measures.router, evidence.router, chat.router, realtime.router,
-          live_context_routes.router):
+          live_context_routes.router, traffic_routes.router):
     app.include_router(r)
 
 

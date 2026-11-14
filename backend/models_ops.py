@@ -130,6 +130,33 @@ class RiskSnapshot(Base):
     __table_args__ = (Index("ix_risk_snapshots_region", "region_kind", "region_key", "created_at"),)
 
 
+class ConditionSnapshot(Base):
+    """Cell-level condition history. No reporter, position, note, IP, or traffic content is stored."""
+    __tablename__ = "condition_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cell_id: Mapped[str] = mapped_column(String, index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    rain: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    night: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    rush: Mapped[bool] = mapped_column(Boolean)
+    # TomTom terms prohibit using live traffic feed data for historical collection/analysis.
+    # Leave this NULL until WAYMARK has written authorization for such retention.
+    congestion_bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    base_score: Mapped[float] = mapped_column(Float)
+    live_score: Mapped[float] = mapped_column(Float)
+    active_incident_count: Mapped[int] = mapped_column(Integer)
+    model_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    condition_lift_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    __table_args__ = (Index("ix_condition_snapshots_cell_at", "cell_id", "at"),)
+
+
+class TrafficRequestCounter(Base):
+    """Persisted quota counters only; contains no provider response or location data."""
+    __tablename__ = "traffic_request_counters"
+    period_key: Mapped[str] = mapped_column(String, primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class IncidentReport(Base):
     """New field reports are operational signals, separate from the historical crash/model data."""
     __tablename__ = "incident_reports"
@@ -163,7 +190,7 @@ class Account(Base):
 
 OPS_TABLES = [Report.__table__, Measure.__table__, MeasureCell.__table__, Evidence.__table__,
               MeasureEvent.__table__, ChatSession.__table__, ChatMessage.__table__, RiskSnapshot.__table__,
-              Account.__table__, IncidentReport.__table__]
+              Account.__table__, IncidentReport.__table__, ConditionSnapshot.__table__, TrafficRequestCounter.__table__]
 
 
 def create_ops_tables(engine: Engine) -> None:

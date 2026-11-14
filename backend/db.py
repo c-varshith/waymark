@@ -65,7 +65,8 @@ def validate_postgres_schema() -> None:
     """Fail fast instead of serving requests against an uninitialized Supabase project."""
     required = {"cells", "cell_shap", "cell_scenarios", "yearly_counts", "data_quality", "metrics", "crashes",
                 "reports", "measures", "measure_cells", "evidence", "measure_events", "chat_sessions",
-                "chat_messages", "risk_snapshots", "accounts", "incident_reports"}
+                "chat_messages", "risk_snapshots", "accounts", "incident_reports",
+                "condition_snapshots", "traffic_request_counters"}
     missing = required - set(inspect(engine).get_table_names())
     if missing:
         names = ", ".join(sorted(missing))

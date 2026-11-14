@@ -50,6 +50,9 @@ async def stream(request: Request, last_event_id: str | None = Header(default=No
         subscriber = await broadcaster.subscribe(_parse_last_event_id(last_event_id))
     except SubscriberLimitError as exc:
         raise HTTPException(503, str(exc)) from None
+    traffic_manager = getattr(request.app.state, "traffic_manager", None)
+    if traffic_manager is not None:
+        traffic_manager.notify_clients_changed()
 
     async def events():
         try:

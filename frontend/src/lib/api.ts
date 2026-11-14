@@ -463,6 +463,29 @@ export interface LiveConditionContext {
   caveat: string
 }
 
+export interface LiveTrafficCell {
+  cell_id: string
+  bucket: 'free' | 'moderate' | 'heavy'
+  observed_at: string
+  road_closure: boolean
+  status: 'ok' | 'stale'
+}
+
+export interface LiveTraffic {
+  status: 'ok' | 'stale' | 'unavailable' | 'budget_reached'
+  source: string
+  attribution: string
+  cells: LiveTrafficCell[]
+  watch_cells: string[]
+  observed_at: string | null
+  requests_today: number
+  requests_month: number
+  daily_cap: number
+  monthly_cap: number
+  score_effect: false
+  error: string | null
+}
+
 export interface ModelHealth {
   model_loaded: boolean
   condition_lift_enabled: boolean
@@ -1028,6 +1051,31 @@ export const api = {
       caveat: str(raw.caveat),
     }
   },
+
+  liveTraffic: async (signal?: AbortSignal): Promise<LiveTraffic> => {
+    const raw = await getJson('/api/live/traffic', undefined, signal)
+    if (!isRec(raw)) throw new ApiError('The server sent an unexpected traffic response.', 502)
+    const status = raw.status === 'ok' || raw.status === 'stale' || raw.status === 'budget_reached' ? raw.status : 'unavailable'
+    const cells = Array.isArray(raw.cells) ? raw.cells.flatMap((item) => {
+      if (!isRec(item) || typeof item.cell_id !== 'string' || typeof item.observed_at !== 'string') return []
+      if (item.bucket !== 'free' && item.bucket !== 'moderate' && item.bucket !== 'heavy') return []
+      const bucket: LiveTrafficCell['bucket'] = item.bucket
+      return [{ cell_id: item.cell_id, bucket, observed_at: item.observed_at,
+        road_closure: bool(item.road_closure),
+        status: item.status === 'stale' ? 'stale' as const : 'ok' as const }]
+    }) : []
+    return {
+      status, source: str(raw.source, 'Traffic provider'), attribution: str(raw.attribution), cells,
+      watch_cells: Array.isArray(raw.watch_cells) ? raw.watch_cells.filter((id): id is string => typeof id === 'string') : [],
+      observed_at: typeof raw.observed_at === 'string' ? raw.observed_at : null,
+      requests_today: num(raw.requests_today) ?? 0, requests_month: num(raw.requests_month) ?? 0,
+      daily_cap: num(raw.daily_cap) ?? 0, monthly_cap: num(raw.monthly_cap) ?? 0,
+      score_effect: false,
+      error: typeof raw.error === 'string' ? raw.error : null,
+    }
+  },
+
+  watchTrafficCell: (cell_id: string) => postJson('/api/live/traffic/watch', { cell_id }),
 
   places: async (query: string, signal?: AbortSignal, prefix = false): Promise<PlaceSearchItem[]> => {
     const raw = await getJson('/api/places', { q: query, prefix }, signal)

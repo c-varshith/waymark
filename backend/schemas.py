@@ -51,6 +51,33 @@ class LiveContext(BaseModel):
     caveat: str
 
 
+class TrafficCell(BaseModel):
+    cell_id: str
+    bucket: Literal["free", "moderate", "heavy"]
+    observed_at: str
+    road_closure: bool = False
+    status: Literal["ok", "stale"]
+
+
+class LiveTraffic(BaseModel):
+    status: Literal["ok", "stale", "unavailable", "budget_reached"]
+    source: str
+    attribution: str
+    cells: list[TrafficCell] = Field(default_factory=list)
+    watch_cells: list[str] = Field(default_factory=list)
+    observed_at: Optional[str] = None
+    requests_today: int = 0
+    requests_month: int = 0
+    daily_cap: int
+    monthly_cap: int
+    score_effect: bool = False
+    error: Optional[str] = None
+
+
+class TrafficWatchRequest(BaseModel):
+    cell_id: str = Field(min_length=1, max_length=20)
+
+
 class PredictionAdjustment(BaseModel):
     kind: str
     multiplier: Optional[float] = None

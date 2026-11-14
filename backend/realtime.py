@@ -20,6 +20,7 @@ EVENT_KEYS: dict[str, frozenset[str]] = {
         "incident_overlay_points", "scored_at",
     }),
     "context.changed": frozenset({"at"}),
+    "traffic.updated": frozenset({"cell_id", "bucket", "observed_at"}),
     "resync": frozenset(),
     "heartbeat": frozenset({"at"}),
 }
