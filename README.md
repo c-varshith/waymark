@@ -30,8 +30,8 @@ The project is a predictive safety intelligence layer: it is designed to support
 ## Screenshots
 
 <p align="center">
-  <img src="frontend/images/main.jpeg" alt="WAYMARK landing page showing Houston road-risk overview" width="49%" />
-  <img src="frontend/images/map.jpeg" alt="WAYMARK interactive Houston risk map with cell details" width="49%" />
+  <img src="frontend/images/main.png" alt="WAYMARK landing page showing Houston road-risk overview" width="49%" />
+  <img src="frontend/images/map.png" alt="WAYMARK interactive Houston risk map with cell details" width="49%" />
 </p>
 
 | At a glance | Details |
