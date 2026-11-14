@@ -48,9 +48,9 @@ def create_measure(body: MeasureCreate, db: Session = Depends(get_db),
                         categories=sorted(get_effects().categories))
     owner = body.owner_role or (Role.engineer if user.role is Role.engineer else Role(cat.default_owner))
     if owner is Role.community:
-        raise api_error(422, "invalid_owner", "Measures must be assigned to City Planners or Road Authorities.")
+        raise api_error(422, "invalid_owner", "Measures must be assigned to Road Authorities (planning) or Road Authority field teams (delivery).")
     if user.role is Role.engineer and owner is not Role.engineer:
-        raise api_error(403, "forbidden", "Road Authorities can create measures only for their own workspace.")
+        raise api_error(403, "forbidden", "Road Authority field teams (delivery) can create measures only for their own workspace.")
     region = resolve_region(db, body.region_kind, body.region_key)
     cell_ids = sorted(set(body.cell_ids))
     known = set(db.scalars(select(Cell.cell_id).where(Cell.cell_id.in_(cell_ids))))
@@ -96,16 +96,16 @@ def patch_measure(measure_id: int, body: MeasurePatch, db: Session = Depends(get
             raise api_error(409, "locked", f"A {m.status} measure can no longer be edited.")
         assigned_owner = m.owner_role == user.role.value
         if not (user.role is Role.planner or (user.role is Role.engineer and assigned_owner)):
-            raise api_error(403, "forbidden", "Only a planner or the assigned Road Authority can update this measure.")
+            raise api_error(403, "forbidden", "Only Road Authorities (planning) or the assigned Road Authority field team can update this measure.")
         if "title" in edits and edits["title"] is not None:
             m.title = edits["title"].strip()
         if "description" in edits:
             m.description = (edits["description"] or "").strip() or None
         if edits.get("owner_role") is not None:
             if user.role is not Role.planner:
-                raise api_error(403, "forbidden", "Only City Planners can reassign a measure.")
+                raise api_error(403, "forbidden", "Only Road Authorities (planning) can reassign a measure.")
             if Role(edits["owner_role"]) is Role.community:
-                raise api_error(422, "invalid_owner", "Measures must be assigned to City Planners or Road Authorities.")
+                raise api_error(422, "invalid_owner", "Measures must be assigned to Road Authorities (planning) or Road Authority field teams (delivery).")
             m.owner_role = Role(edits["owner_role"]).value
         if "due_at" in progress_fields:
             value = progress_fields["due_at"]
@@ -133,7 +133,7 @@ def cancel_measure(measure_id: int, db: Session = Depends(get_db),
     if m.status in ("verified", "cancelled"):
         raise api_error(409, "locked", f"A {m.status} measure cannot be cancelled.")
     if not (user.role is Role.planner or (user.role is Role.engineer and m.owner_role == user.role.value)):
-        raise api_error(403, "forbidden", "Only a planner or the assigned Road Authority can cancel this measure.")
+        raise api_error(403, "forbidden", "Only Road Authorities (planning) or the assigned Road Authority field team can cancel this measure.")
     prev = m.status
     m.status, m.updated_at = "cancelled", utcnow()
     add_event(db, m, "transition", user, from_status=prev, to_status="cancelled", note="Cancelled")

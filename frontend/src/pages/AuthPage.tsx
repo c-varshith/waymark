@@ -108,11 +108,11 @@ export default function AuthPage() {
             <input id="signup-password" className={fieldClass} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required minLength={6} maxLength={256} placeholder="Create a password" />
             <label className="auth-label" htmlFor="signup-role">Role</label>
             <select id="signup-role" className={fieldClass} value={role} onChange={(event) => setRole(event.target.value as RoleId)} required>
-              <option value="engineer">Road Authorities</option>
-              <option value="planner">City Planners</option>
-              <option value="community">Traffic Police</option>
+              <option value="planner">Road Authorities — planning</option>
+              <option value="engineer">Road Authority field teams — delivery</option>
+              <option value="community">User</option>
             </select>
-            <p className="auth-hint">Use at least 6 characters. Your role controls workspace permissions.</p>
+            <p className="auth-hint">Users can report crashes and enable proximity alerts. The Road Authorities planning team selects measures; field teams deliver assigned work.</p>
             {error && <p role="alert" className="auth-error">{error}</p>}
             <button type="submit" disabled={busy} className="auth-submit">
               {busy ? 'Please wait…' : 'Create account'}

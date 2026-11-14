@@ -38,9 +38,9 @@ class Role(str, Enum):
 
 
 ROLE_LABELS = {
-    Role.planner: "City Planners",
-    Role.engineer: "Road Authorities",
-    Role.community: "Traffic Police",
+    Role.planner: "Road Authorities — planning",
+    Role.engineer: "Road Authority field teams — delivery",
+    Role.community: "User",
 }
 
 

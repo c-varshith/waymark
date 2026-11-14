@@ -19,7 +19,7 @@ const ROLE_INFO: Record<RoleId, { starters: string[] }> = {
     starters: ['What should we inspect on site first?', 'Which measures can we deliver at the top hotspots?', 'What photos should I take as evidence?'],
   },
   community: {
-    starters: ['Which hotspots need traffic safety attention first?', 'What should officers document during a site visit?', 'What should Traffic Police coordinate with City Planners?'],
+    starters: ['How do I report a crash or near miss?', 'How do I turn on proximity alerts?', 'What does this area’s risk report tell me?'],
   },
 }
 
@@ -62,12 +62,16 @@ export function AssistantTab({
   regionKey,
   attachReport,
   onAddedToPlan,
+  onRecommendation,
+  addedRecommendationIds,
   embedded = false,
 }: {
   kind: string
   regionKey: string
   attachReport: RegionReport | null
-  onAddedToPlan: (title: string) => void
+  onAddedToPlan: (card: RecommendationCard) => void
+  onRecommendation: (reportId: string, card: RecommendationCard) => void
+  addedRecommendationIds: Set<string>
   embedded?: boolean
 }) {
   const { user } = useAuth()
@@ -196,7 +200,11 @@ export function AssistantTab({
     setBusy(true)
     const onEvent = (ev: ChatEvent) => {
       if (ev.type === 'token') patch(aKey, (m) => ({ ...m, content: m.content + ev.text }))
-      else if (ev.type === 'card') patch(aKey, (m) => ({ ...m, cards: [...m.cards, ev.card] }))
+      else if (ev.type === 'card') {
+        patch(aKey, (m) => ({ ...m, cards: [...m.cards, ev.card] }))
+        const reportId = chip?.report_id ?? attachReport?.report_id
+        if (reportId) onRecommendation(reportId, ev.card)
+      }
       else if (ev.type === 'done') patch(aKey, (m) => ({ ...m, fallback: ev.fallback_mode, streaming: false }))
       else if (ev.type === 'error') patch(aKey, (m) => ({ ...m, note: ev.message, streaming: false }))
     }
@@ -239,7 +247,7 @@ export function AssistantTab({
         source: 'chat',
       })
       setCard(card.card_id, { state: 'added' })
-      onAddedToPlan(card.title)
+      onAddedToPlan(card)
     } catch (e) {
       setCard(card.card_id, { state: 'idle', error: e instanceof ApiError ? e.message : 'Could not add this to the plan.' })
     }
@@ -399,7 +407,8 @@ export function AssistantTab({
                         <p className="mb-3 text-sm text-navy/65">Review a recommendation, then add it to the regional action plan.</p>
                         <ul className="space-y-3">
                           {m.cards.map((c) => {
-                            const st = cards[c.card_id] ?? { state: 'idle' as const }
+                            const sharedAdded = addedRecommendationIds.has(c.card_id)
+                            const st = sharedAdded ? { state: 'added' as const } : cards[c.card_id] ?? { state: 'idle' as const }
                             if (st.state === 'dismissed') return null
                             return (
                               <li key={c.card_id}>
@@ -422,9 +431,9 @@ export function AssistantTab({
                                       {st.state === 'added' ? (
                                         <span className="inline-flex items-center gap-1.5 rounded-full bg-teal/10 px-3 py-2 text-xs font-bold text-teal"><Check aria-hidden="true" className="h-4 w-4" />Created — opening Progress</span>
                                       ) : user?.role === 'community' ? (
-                                        <p className="text-xs font-semibold text-navy/65">Share this recommendation with a City Planner to add it to the action plan.</p>
+                                        <p className="text-xs font-semibold text-navy/65">Share this recommendation with the Road Authorities planning team to add it to the action plan.</p>
                                       ) : user?.role === 'engineer' && c.owner_role !== 'engineer' ? (
-                                        <p className="text-xs font-semibold text-navy/65">A City Planner must assign this measure before it can be added.</p>
+                                        <p className="text-xs font-semibold text-navy/65">The Road Authorities planning team must assign this measure before it can be added.</p>
                                       ) : (
                                         <>
                                           <button type="button" disabled={st.state === 'adding' || !chip} onClick={() => void addToPlan(c)} className="rounded-lg bg-navy px-3.5 py-2 text-xs font-bold text-ivory transition hover:bg-navy-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass disabled:cursor-not-allowed disabled:opacity-50">

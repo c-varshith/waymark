@@ -27,40 +27,39 @@ Grounding rules (always apply):
 - Use the propose_measures tool only when the user asks for actions, recommendations, priorities, or what to do next. For greetings, explanations, questions about report facts, or unrelated conversation, answer directly and do not create action cards.
 - When you do propose measures, use 1–3 useful next actions as cards. Every cell_id must come from the digest's valid_cell_ids and every category must be one of the listed categories. These cards are the actions the user can create in the action plan.
 - Do not reproduce or summarize the digest as a table, pipe-delimited text, or a long report. Never paste report rows or raw data into the answer.
+- Keep replies skimmable: answer directly in a short paragraph or a few bullets. For hotspot rankings, describe the pattern briefly and let the linked report and action cards carry cell-level detail; never reprint a ranking table.
 - If cards are returned, briefly explain why they fit the user's request. If no cards are needed, do not mention action cards.
 - If the user only greets you, greet them naturally and ask what they want to know about the report. If they ask something unrelated, answer briefly when possible and explain the report scope when needed; do not redirect to actions automatically."""
 
 ROLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "planner": {
-        "label": "City Planners",
+        "label": "Road Authorities — planning",
         "tone": "Structured and decision-oriented. Lead with priorities and trade-offs.",
         "focus": "Sequencing across the region, what to audit first, what evidence a reviewer should require before "
                  "approving a measure, and how the plan is progressing.",
-        "scope": "You may propose measures owned by City Planners or Road Authorities. Traffic Police can submit incident reports and operational observations.",
+        "scope": "You plan and assign measures, review User crash and near-miss reports, and verify completed work. Road Authority field teams deliver assigned measures.",
         "owners": (Role.planner, Role.engineer),
         "starters": ["What should we do first?", "Which cells should be audited before anything else?",
                      "What evidence should I ask for before approving a measure?"],
     },
     "engineer": {
-        "label": "Road Authorities",
+        "label": "Road Authority field teams — delivery",
         "tone": "Practical and specific. Name the physical element to inspect or change, and the evidence photos to take.",
         "focus": "Site inspections, deliverable measures per cell, before/after photo evidence, and what to check on site.",
-        "scope": "You propose measures that Road Authorities can deliver (owner Road Authorities). Suggest that City Planners review "
-                 "anything beyond that.",
+        "scope": "You inspect sites, deliver assigned measures, and submit implementation evidence. The Road Authorities planning team reviews "
+                 "and assigns regional priorities.",
         "owners": (Role.engineer,),
         "starters": ["What should we inspect on site first?", "Which measures can we deliver at the top hotspots?",
                      "What photos should I take as evidence?"],
     },
     "community": {
-        "label": "Traffic Police",
-        "tone": "Clear, practical and concise. Explain findings in plain language and focus on street-level safety operations.",
-        "focus": "Which hotspots need traffic safety attention, what officers can observe or document on site, and what to "
-                 "coordinate with City Planners.",
-        "scope": "You may propose follow-up measures assigned to City Planners or Road Authorities. Traffic Police can "
-                 "submit crash and near-miss reports and add operational observations to shared measures.",
+        "label": "User",
+        "tone": "Clear, practical and concise. Explain findings in plain language and help people report crashes and near misses.",
+        "focus": "How to submit an incident report, understand nearby risk information, and enable location-based proximity alerts.",
+        "scope": "You can submit crash and near-miss reports and use the map's opt-in proximity alerts. Road Authorities plan measures from report-backed recommendations; field teams deliver assigned work.",
         "owners": (Role.planner, Role.engineer),
-        "starters": ["Which hotspots need traffic safety attention first?", "What should officers document during a site visit?",
-                     "What should Traffic Police coordinate with City Planners?"],
+        "starters": ["How do I report a crash or near miss?", "How do I turn on proximity alerts?",
+                     "What does this area's risk report tell me?"],
     },
 }
 

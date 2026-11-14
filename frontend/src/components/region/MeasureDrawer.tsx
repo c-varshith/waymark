@@ -210,7 +210,7 @@ export function MeasureDrawer({
                       Start work
                     </button>
                   ) : (
-                    <p className="text-navy/75">Waiting for a planner or engineer to start work on this measure.</p>
+                    <p className="text-navy/75">Waiting for Road Authorities planning or a field team to start work on this measure.</p>
                   )
                 )}
                 {m.status === 'in_progress' && (
@@ -226,7 +226,7 @@ export function MeasureDrawer({
                     )}
                   </>
                 )}
-                {m.status === 'evidence_submitted' && !canReview && <p className="text-navy/75">Evidence is submitted. A planner needs to review it before the measure counts as verified.</p>}
+                {m.status === 'evidence_submitted' && !canReview && <p className="text-navy/75">Evidence is submitted. Road Authorities planning must review it before the measure counts as verified.</p>}
                 {canReview && (
                   <div className="space-y-2 rounded-xl border border-navy/15 bg-white p-3">
                     <p className="font-semibold">Review the evidence</p>

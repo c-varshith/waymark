@@ -162,7 +162,7 @@ function transition(m: StoredMeasure, to: MeasureStatus, u: { id: string; role: 
   if (!allowed.includes(to)) return err(409, `A measure that is '${m.status}' cannot move to '${to}'.`, 'illegal_transition')
   let type: MeasureEvent['type'] = 'transition'
   if (m.status === 'evidence_submitted') {
-    if (u.role !== 'planner') return err(403, 'Only a planner can approve or reject submitted evidence.', 'forbidden')
+    if (u.role !== 'planner') return err(403, 'Only Road Authorities planning can approve or reject submitted evidence.', 'forbidden')
     if (m.created_by === u.id || m.evidence.some((e) => e.uploaded_by === u.id)) {
       return err(403, 'You cannot review a measure you created or whose evidence you uploaded. Another reviewer needs to do this.', 'self_verification')
     }
@@ -223,7 +223,7 @@ export async function mockRequest(method: string, path: string, req: MockReq): P
       return ok({ count: items.length, items })
     }
     if (b === undefined && method === 'POST') {
-      if (u.role !== 'community') return err(403, 'Only Traffic Police can submit incident reports.', 'forbidden')
+      if (u.role !== 'community') return err(403, 'Only Users can submit incident reports.', 'forbidden')
       const body = req.json as { kind: 'crash' | 'near_miss'; lat: number; lng: number; occurred_at: string; severity?: number; reasons?: string[]; note?: string }
       const row: IncidentReport = { id: ++nextId, kind: body.kind, cell_id: baseReport.analysis.hotspots[0]?.cell_id ?? '', lat: body.lat, lng: body.lng,
         occurred_at: body.occurred_at, severity: body.kind === 'crash' ? body.severity ?? null : null, reasons: body.reasons ?? null, note: body.note ?? null,
@@ -233,7 +233,7 @@ export async function mockRequest(method: string, path: string, req: MockReq): P
       return ok(row, 201)
     }
     if (b && c === 'review' && method === 'POST') {
-      if (u.role !== 'planner') return err(403, 'Only City Planners can review incident reports.', 'forbidden')
+      if (u.role !== 'planner') return err(403, 'Only Road Authorities planning can review incident reports.', 'forbidden')
       const row = incidentReports.find((r) => r.id === Number(b))
       if (!row) return err(404, 'Incident report not found.')
       if (incidentReportOwners.get(row.id) === u.id) return err(403, 'You cannot review your own incident report.')
@@ -284,12 +284,12 @@ export async function mockRequest(method: string, path: string, req: MockReq): P
 
   if (a === 'measures') {
     if (!b && method === 'POST') {
-      if (u.role === 'community') return err(403, 'Your role cannot create measures.', 'forbidden')
+      if (u.role === 'community') return err(403, 'Users cannot create measures. Share recommendations with Road Authorities planning.', 'forbidden')
       const body = req.json as { title: string; category: string; cell_ids: string[]; owner_role?: RoleId; description?: string; source?: 'chat' | 'manual' }
       if (!category(body.category)) return err(422, `'${body.category}' is not a known measure category.`, 'unknown_category')
       const owner = body.owner_role ?? (u.role === 'engineer' ? 'engineer' : category(body.category)!.default_owner)
-      if (owner === 'community') return err(422, 'Measures must be assigned to City Planners or Road Authorities.', 'invalid_owner')
-      if (u.role === 'engineer' && owner !== 'engineer') return err(403, 'Road Authorities can create measures only for their own workspace.', 'forbidden')
+      if (owner === 'community') return err(422, 'Measures must be assigned to Road Authorities planning or Road Authority field teams.', 'invalid_owner')
+      if (u.role === 'engineer' && owner !== 'engineer') return err(403, 'Road Authority field teams can create measures only for their own workspace.', 'forbidden')
       const m = make({ title: body.title, category: body.category, cell_ids: body.cell_ids, owner_role: owner, description: body.description ?? null, source: body.source ?? 'manual' }, u)
       record(m.id)
       return ok(detail(m, u.role), 201)
@@ -319,8 +319,8 @@ export async function mockRequest(method: string, path: string, req: MockReq): P
       const body = req.json as { title?: string; status?: MeasureStatus; note?: string; owner_role?: RoleId; due_at?: string | null; progress_note?: string | null }
       const planEdit = body.title !== undefined || body.owner_role !== undefined || body.due_at !== undefined || body.progress_note !== undefined
       if (planEdit && !(u.role === 'planner' || (u.role === 'engineer' && m.owner_role === 'engineer'))) return err(403, 'Only the assigned workspace can update this measure.', 'wrong_measure_owner')
-      if (body.owner_role !== undefined && u.role !== 'planner') return err(403, 'Only City Planners can reassign a measure.', 'forbidden')
-      if (body.owner_role === 'community') return err(422, 'Measures must be assigned to City Planners or Road Authorities.', 'invalid_owner')
+      if (body.owner_role !== undefined && u.role !== 'planner') return err(403, 'Only Road Authorities planning can reassign a measure.', 'forbidden')
+      if (body.owner_role === 'community') return err(422, 'Measures must be assigned to Road Authorities planning or Road Authority field teams.', 'invalid_owner')
       if (body.title) m.title = body.title
       if (body.owner_role) m.owner_role = body.owner_role
       if (body.due_at !== undefined) m.due_at = body.due_at
@@ -332,7 +332,7 @@ export async function mockRequest(method: string, path: string, req: MockReq): P
       return ok(detail(m, u.role))
     }
     if (method === 'DELETE') {
-      if (!(u.role === 'planner' || (u.role === 'engineer' && m.owner_role === 'engineer'))) return err(403, 'Only a planner or the assigned Road Authority can cancel this measure.', 'forbidden')
+      if (!(u.role === 'planner' || (u.role === 'engineer' && m.owner_role === 'engineer'))) return err(403, 'Only Road Authorities planning or the assigned Road Authority field team can cancel this measure.', 'forbidden')
       if (m.status === 'verified' || m.status === 'cancelled') return err(409, `A ${m.status} measure cannot be cancelled.`, 'locked')
       const from = m.status
       m.status = 'cancelled'

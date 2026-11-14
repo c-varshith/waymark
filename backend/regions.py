@@ -266,7 +266,7 @@ def analyse_region(db: Session, resolved: ResolvedRegion) -> RegionAnalysis:
         caveats.append("Crash records are not loaded in this database, so the trend, hour-of-day and street details are "
                        "unavailable. Run pipeline/load_crashes.py to enable them.")
     if incident_pending or incident_confirmed:
-        caveats.append(f"Traffic Police incident activity: {incident_pending} pending and {incident_confirmed} confirmed "
+        caveats.append(f"User-reported incident activity: {incident_pending} pending and {incident_confirmed} confirmed "
                        "report(s). These operational reports are separate from the historical crash score.")
     low_conf = sum(1 for c in cells if c.confidence == "Low")
     if cells and low_conf / len(cells) >= 0.5:

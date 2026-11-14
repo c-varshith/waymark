@@ -4,9 +4,9 @@
 export type RoleId = 'planner' | 'engineer' | 'community'
 
 export const ROLE_LABELS: Record<RoleId, string> = {
-  planner: 'City Planners',
-  engineer: 'Road Authorities',
-  community: 'Traffic Police',
+  planner: 'Road Authorities — planning',
+  engineer: 'Road Authority field teams — delivery',
+  community: 'User',
 }
 
 export interface UserOut {

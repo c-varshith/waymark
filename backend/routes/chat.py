@@ -191,6 +191,36 @@ def _chunks(text: str, size: int = 24) -> Iterator[str]:
         yield buf
 
 
+def _tune_reply(text: str) -> str:
+    """Remove raw ranking tables that occasionally slip through the model instructions."""
+    cleaned: list[str] = []
+    dropping_table = False
+    for line in text.splitlines():
+        lower = line.lower()
+        # Some providers flatten a whole markdown table onto one long line.
+        header = re.search(r"\brank\s*\|\s*cell(?:\s+id)?\s*\|\s*(?:risk\s*score|score)", lower)
+        if header:
+            prefix = line[:header.start()].rstrip(" :|\t")
+            if prefix:
+                cleaned.append(prefix)
+            dropping_table = True
+            continue
+        pipes = line.count("|")
+        separator = pipes >= 2 and re.fullmatch(r"[\s|:-]+", line.strip()) is not None
+        if separator:
+            dropping_table = True
+            continue
+        if dropping_table and pipes >= 2:
+            continue
+        if pipes >= 3:
+            # Treat pipe-heavy row dumps as tables, preserving surrounding prose.
+            continue
+        dropping_table = False
+        cleaned.append(line.rstrip())
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()
+    return result
+
+
 def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport], history_pairs: list[tuple[str, str]],
              question: str) -> Iterator[tuple[str, object]]:
     """Core of one assistant turn. Yields ("token", str), ("card", RecommendationCard), then ("done", (text, cards, fallback))."""
@@ -220,7 +250,8 @@ def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport]
         if result.raw_cards and not cards:
             # Every proposed card failed validation (unknown category, invented cell id, ungrounded number...).
             raise llm.LLMError("all model cards were rejected by validation")
-        if not text.strip():
+        text = _tune_reply(text)
+        if not text:
             if cards:
                 text = "I found report-backed actions that may help. Review the cards below before adding them to the plan."
             else:
@@ -231,7 +262,7 @@ def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport]
         fallback = True
         cards = rule_based_cards(report, role) if wants_actions else []
         reply = fallback_reply(report, role, cards, question)
-        partial = text.strip()
+        partial = _tune_reply(text.strip())
         # Keep whatever the model already wrote before it failed, then add the rule-based answer.
         text = f"{partial}\n\n{reply}" if partial else reply
         yield from (("token", c) for c in _chunks(text))

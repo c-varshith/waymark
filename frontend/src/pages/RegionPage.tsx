@@ -14,7 +14,7 @@ import { useAuth } from '../context/auth'
 import { useApi } from '../hooks/useApi'
 import { opsApi } from '../lib/opsApi'
 import { ROLE_LABELS } from '../lib/types.ops'
-import type { RegionReport } from '../lib/types.ops'
+import type { RecommendationCard, RegionReport } from '../lib/types.ops'
 
 const TABS = [
   { id: 'analysis', label: 'Analysis', Icon: BarChart3 },
@@ -59,6 +59,8 @@ export default function RegionPage() {
   const visited = opened.has(tab) ? opened : new Set(opened).add(tab)
 
   const [attachReport, setAttachReport] = useState<RegionReport | null>(null)
+  const [recommendationsByReport, setRecommendationsByReport] = useState<Record<string, RecommendationCard[]>>({})
+  const [addedRecommendationIds, setAddedRecommendationIds] = useState<Set<string>>(() => new Set())
   const [progressNonce, setProgressNonce] = useState(0)
   const [regenNonce, setRegenNonce] = useState(() => autoGenerateRequested.current ? 1 : 0)
   const [toast, setToast] = useState<ToastData | null>(null)
@@ -254,6 +256,13 @@ export default function RegionPage() {
                     regionKey={key}
                     autoGenerate={regenNonce}
                     onAsk={(report) => openAssistant(report)}
+                    recommendations={recommendationsByReport}
+                    addedRecommendationIds={addedRecommendationIds}
+                    onAddedToPlan={(card) => {
+                      setAddedRecommendationIds((ids) => new Set(ids).add(card.card_id))
+                      setProgressNonce((n) => n + 1)
+                      notify(`Added to the action plan: ${card.title}`, 'Open Progress tab', () => goTab('progress'))
+                    }}
                   />
                 ) : (
                   <ProgressTab
@@ -333,9 +342,15 @@ export default function RegionPage() {
                     kind={kind}
                     regionKey={key}
                     attachReport={attachReport}
-                    onAddedToPlan={(title) => {
+                    addedRecommendationIds={addedRecommendationIds}
+                    onRecommendation={(reportId, card) => setRecommendationsByReport((all) => {
+                      const existing = all[reportId] ?? []
+                      return { ...all, [reportId]: existing.some((item) => item.card_id === card.card_id) ? existing : [...existing, card] }
+                    })}
+                    onAddedToPlan={(card) => {
+                      setAddedRecommendationIds((ids) => new Set(ids).add(card.card_id))
                       setProgressNonce((n) => n + 1)
-                      notify(`Added to the action plan: ${title}`, 'Open Progress tab', () => goTab('progress'))
+                      notify(`Added to the action plan: ${card.title}`, 'Open Progress tab', () => goTab('progress'))
                     }}
                   />
                 </section>

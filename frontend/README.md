@@ -47,7 +47,7 @@ The app is served at <http://localhost:5173>. During development, Vite forwards 
 | `/about` | Methodology, map interpretation, limitations, and attribution. |
 | `/auth` | Sign-in and account creation. |
 | `/settings` | Signed-in profile and password settings. |
-| `/incident-reports` | City Planner queue for reviewing reported incidents. |
+| `/incident-reports` | Road Authorities planning queue for reviewing User reports. |
 | `/region/:regionId` | Region analysis and measure progress workspace, with a floating Assistant chat. |
 
 A cell can be opened directly, for example `/map?cell=89446ca89d7ffff`.
@@ -61,7 +61,8 @@ A cell can be opened directly, for example `/map?cell=89446ca89d7ffff`.
 - Scenario controls compare the baseline against night, rain, and low-visibility input conditions. The panel is labeled as a simulation, not a live forecast.
 - The adjusted-risk mode visualizes an overlay based only on verified measures. The current effect weights are placeholders and must be treated as illustrative.
 - Progress projection visualizes an estimate based on active measure stages; it is separate from verified adjusted risk and does not change the trained model score.
-- Incident activity shows pending and confirmed crash or near-miss reports separately from model risk. Traffic Police can report incidents from the map; City Planners review them.
+- Incident activity shows pending and confirmed crash or near-miss reports separately from model risk. Users can report incidents from the map; Road Authorities planning review them.
+- Users can opt in to browser location-based proximity alerts for high-risk cells. These are on-device alerts while the site is open, not notifications triggered by other users' reports.
 - OpenStreetMap is the default tile provider. MapTiler is optional for alternate street and satellite styles.
 
 ## Region workspace
@@ -69,10 +70,10 @@ A cell can be opened directly, for example `/map?cell=89446ca89d7ffff`.
 The region page has two tabs and a floating Assistant button:
 
 - **Analysis:** create or open a region report, review summary statistics and hotspot cells, and download PDF or JSON files.
-- **Progress:** follow measures through planning, implementation, evidence submission, and planner review. Evidence images can be uploaded and viewed in the measure details.
+- **Progress:** follow measures planned by Road Authorities through field implementation, evidence submission, and review. Evidence images can be uploaded and viewed in the measure details.
 - **Assistant:** open the bottom-right chat button to ask questions, attach reports, and review structured recommendation cards. Expand the compact chat to a larger window; report hand-off opens the chat with the selected report attached.
 
-Authentication and role permissions are enforced by the backend. API role IDs are `planner`, `engineer`, and `community`, displayed as City Planners, Road Authorities, and Traffic Police.
+Authentication and role permissions are enforced by the backend. Existing API role IDs remain `planner`, `engineer`, and `community`, displayed as Road Authorities — planning, Road Authority field teams — delivery, and User. Users can report incidents and use proximity alerts; only the planning role can create or assign regional measures and review incident reports.
 
 ## API integration and mock mode
 
@@ -114,32 +115,22 @@ npm run preview
 
 `npm run build` type-checks the TypeScript projects and creates the production bundle in `dist/`. `npm run preview` serves that bundle locally on port 4173.
 
-### Vercel deployment
+### Render deployment
 
-Create a Vercel project connected to this repository and configure:
+Create a Render **Static Site** connected to this repository and configure:
 
 | Setting | Value |
 | --- | --- |
 | Root directory | `frontend` |
-| Framework preset | Vite |
 | Install command | `npm ci` |
 | Build command | `npm run build` |
 | Output directory | `dist` |
 
-Set `VITE_API_BASE` in Vercel's project environment variables to the public Render API origin, for example `https://waymark-api.onrender.com`. Do not append `/api`; the API client adds route paths. This value is embedded into the frontend at build time, so redeploy after changing it. Keep backend API keys and JWT secrets out of frontend environment variables.
+Set `VITE_API_BASE` in the Render static site's environment variables to the public Render API origin, for example `https://waymark-api.onrender.com`. Do not append `/api`; the API client adds route paths. This value is embedded into the frontend at build time, so redeploy after changing it. Keep backend API keys and JWT secrets out of frontend environment variables.
 
-This app uses client-side routing. Add `frontend/vercel.json` (the Vercel project root is the `frontend/` directory) with this rewrite to support direct links and refreshes on routes such as `/map` and `/region/:regionId`:
+This app uses client-side routing. Configure a Render rewrite from `/*` to `/index.html` with status `200` to support direct links and refreshes on routes such as `/map` and `/region/:regionId`.
 
-```json
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
-```
-
-Set the Vercel production origin in the Render service's `WAYMARK_CORS_ORIGINS`. Restrict any browser-visible MapTiler keys to approved domains.
+Set the frontend's production origin in the backend service's `WAYMARK_CORS_ORIGINS`. Restrict any browser-visible MapTiler keys to approved domains.
 
 Alternatively, build `dist/` and run the backend from the project root. FastAPI serves `frontend/dist/` when it exists and supports the frontend's client-side routes.
 

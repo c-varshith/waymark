@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from .auth import Role, User
+from .auth import ROLE_LABELS, Role, User
 from .config_loader import get_effects, placeholder_weights
 from .models import Cell
 from .models_ops import Evidence, Measure, MeasureCell, MeasureEvent, RiskSnapshot, utcnow
@@ -232,9 +232,9 @@ def apply_transition(db: Session, m: Measure, to: str, user: User, note: Optiona
     # Role permission first: a role that can never change status gets "forbidden", not an ownership error.
     if frm == "evidence_submitted":
         if not can(user.role, "measure.verify"):
-            raise api_error(403, "forbidden", "Only a planner can approve or reject submitted evidence.")
+            raise api_error(403, "forbidden", "Only Road Authorities (planning) can approve or reject submitted evidence.")
     elif not auto and not can(user.role, "measure.transition"):
-        raise api_error(403, "forbidden", f"Your role ({user.role.value}) cannot change a measure's status.")
+        raise api_error(403, "forbidden", f"Your role ({ROLE_LABELS[user.role]}) cannot change a measure's status.")
 
     if user.role is not Role.planner and m.owner_role != user.role.value:
         raise api_error(403, "wrong_measure_owner", "Only the assigned workspace can update this measure.")

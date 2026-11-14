@@ -24,7 +24,7 @@ export function RiskPanel({ progress }: { progress: Progress }) {
           <p className="text-xs font-bold text-brass-soft">Regional overview</p>
           <SectionTitle>Risk scores</SectionTitle>
         </div>
-        <p className="max-w-md text-xs leading-relaxed text-ivory/70">Baseline stays fixed. Confirmed reduction requires planner verification; projection follows work status.</p>
+        <p className="max-w-md text-xs leading-relaxed text-ivory/70">Baseline stays fixed. Confirmed reduction requires approval from the Road Authorities planning team; projection follows work status.</p>
       </div>
       <div className="space-y-5 p-4 sm:p-6">
         <div className="grid gap-3 sm:grid-cols-3">
@@ -45,7 +45,7 @@ export function RiskPanel({ progress }: { progress: Progress }) {
           </div>
         </div>
       {change === 0 && progress.verified_pct === 0 && (
-        <p className="rounded-xl bg-ivory px-4 py-3 text-sm leading-relaxed text-navy/75">No verified measures yet, so the confirmed adjusted index equals baseline. The projection can move as work advances; only a planner’s approval changes confirmed adjusted risk.</p>
+        <p className="rounded-xl bg-ivory px-4 py-3 text-sm leading-relaxed text-navy/75">No verified measures yet, so the confirmed adjusted index equals baseline. The projection can move as work advances; only approval from the Road Authorities planning team changes confirmed adjusted risk.</p>
       )}
       {change === 0 && progress.verified_pct > 0 && (
         <p className="rounded-xl bg-ivory px-4 py-3 text-sm leading-relaxed text-navy/75">

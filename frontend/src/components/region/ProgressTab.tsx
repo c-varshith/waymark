@@ -112,7 +112,7 @@ export function ProgressTab({
                   value={p.verified_pct}
                   variant="segmented"
                   segments={p.measures.map((m) => ({ id: m.id, title: `${m.title}: ${STATUS_META[m.status].label}`, fill: m.status === 'verified' ? 1 : 0 }))}
-                  hint="Share of measures a planner has verified. Only these lower the adjusted risk."
+                  hint="Share of measures verified by Road Authorities planning. Only these lower the adjusted risk."
                 />
               </div>
             )}

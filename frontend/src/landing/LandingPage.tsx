@@ -45,7 +45,7 @@ const STEPS = [
   },
   {
     title: 'Review',
-    body: 'Planners and engineers read the map and the audit list, then decide where to send a site audit. The tool never decides for them.',
+    body: 'Road Authorities review the map, audit list and suggested actions, then decide which safety measures to plan. Field teams deliver assigned work. WAYMARK supports their decisions; it never decides for them.',
   },
 ]
 
@@ -288,7 +288,7 @@ export default function LandingPage() {
                 <li>One city and one main backtest. Results are indicative.</li>
                 <li>Scores are estimates from historical records. They do not predict individual crashes.</li>
                 <li>What-if conditions are simulations, not forecasts.</li>
-                <li>The tool recommends where to look. Engineers and planners decide what to do.</li>
+                <li>WAYMARK suggests where to look. Road Authorities decide which measures to plan, and field teams deliver assigned work.</li>
               </ul>
             </div>
             <div className="lg:justify-self-end">

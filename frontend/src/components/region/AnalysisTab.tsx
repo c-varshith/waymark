@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { BarChart3, FileDown, Sparkles } from 'lucide-react'
+import { BarChart3, Check, FileDown, Sparkles } from 'lucide-react'
 import { ApiError } from '../../lib/api'
 import { opsApi, saveBlob } from '../../lib/opsApi'
-import type { RegionReport, ReportStatus, ReportSummary } from '../../lib/types.ops'
+import type { RecommendationCard, RegionReport, ReportStatus, ReportSummary } from '../../lib/types.ops'
+import { ROLE_LABELS } from '../../lib/types.ops'
+import { useAuth } from '../../context/auth'
 import { Card, ErrorBanner, SkeletonBlock } from '../ui'
 import { PlaceholderNotice, SectionTitle } from '../ops/bits'
-import { fmtDate } from '../ops/util'
+import { categoryLabel, fmtDate, useEffects } from '../ops/util'
 
 const POLL_LIMIT_MS = 90_000
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -85,13 +87,21 @@ export function AnalysisTab({
   regionKey,
   onAsk,
   autoGenerate,
+  recommendations,
+  addedRecommendationIds,
+  onAddedToPlan,
 }: {
   kind: string
   regionKey: string
   onAsk: (report: RegionReport) => void
   /** Increase to ask this tab to generate a fresh report (used by the Progress tab's "Regenerate" prompt). */
   autoGenerate: number
+  recommendations: Record<string, RecommendationCard[]>
+  addedRecommendationIds: Set<string>
+  onAddedToPlan: (card: RecommendationCard) => void
 }) {
+  const { user } = useAuth()
+  const fx = useEffects()
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [report, setReport] = useState<RegionReport | null>(null)
@@ -100,6 +110,7 @@ export function AnalysisTab({
   const [listError, setListError] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [loadingFirst, setLoadingFirst] = useState(true)
+  const [actionStates, setActionStates] = useState<Record<string, { adding?: boolean; error?: string }>>({})
   const run = useRef(0)
   const actionRef = useRef<HTMLDivElement>(null)
   const reportSectionRef = useRef<HTMLElement>(null)
@@ -230,6 +241,29 @@ export function AnalysisTab({
     ? `From ${a.year_trend[0].year} to ${a.year_trend[a.year_trend.length - 1].year}, the busiest year had ${Math.max(...a.year_trend.map((y) => y.crashes))} recorded crashes.`
     : 'No yearly crash counts.'
   const peak = a?.hour_of_day.length ? a.hour_of_day.reduce((m, h) => (h.crashes > m.crashes ? h : m)) : null
+  const reportRecommendations = report ? (recommendations[report.report_id] ?? []) : []
+
+  const addRecommendation = async (card: RecommendationCard) => {
+    if (!report || !a || !user || user.role === 'community' || (user.role === 'engineer' && card.owner_role !== 'engineer')) return
+    setActionStates((all) => ({ ...all, [card.card_id]: { adding: true } }))
+    try {
+      await opsApi.createMeasure({
+        region_kind: a.region.kind,
+        region_key: a.region.key,
+        title: card.title,
+        category: card.category,
+        cell_ids: card.cell_ids,
+        report_id: report.report_id,
+        description: card.rationale,
+        owner_role: card.owner_role,
+        source: 'chat',
+      })
+      setActionStates((all) => ({ ...all, [card.card_id]: {} }))
+      onAddedToPlan(card)
+    } catch (e) {
+      setActionStates((all) => ({ ...all, [card.card_id]: { error: e instanceof ApiError ? e.message : 'Could not add this action.' } }))
+    }
+  }
 
   return (
     <div className="space-y-7 pb-6">
@@ -297,7 +331,7 @@ export function AnalysisTab({
             </dl>
             {(a.incident_pending_count > 0 || a.incident_confirmed_count > 0) && (
               <p className="rounded-xl border border-teal/20 bg-teal/5 px-4 py-3 text-sm text-navy/80">
-                Traffic Police reports: <strong>{a.incident_pending_count} pending</strong> and <strong>{a.incident_confirmed_count} confirmed</strong>.
+                User reports: <strong>{a.incident_pending_count} pending</strong> and <strong>{a.incident_confirmed_count} confirmed</strong>.
                 <span className="text-navy/60"> These are operational reports and do not change the historical crash score.</span>
               </p>
             )}
@@ -397,6 +431,51 @@ export function AnalysisTab({
                     </Card>
                   </li>
                 ))}
+              </ul>
+            )}
+          </section>
+
+          <section aria-labelledby="actions-head" className="space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <SectionTitle id="actions-head">Suggested actions</SectionTitle>
+                <p className="mt-1 text-sm text-navy/65">Report-grounded recommendations are shared with the assistant. Add an action here or in chat to track it in Progress.</p>
+              </div>
+              <button type="button" onClick={() => onAsk(report)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-navy/15 bg-white px-3 py-2 text-sm font-bold text-navy transition hover:bg-ivory focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass">
+                <Sparkles aria-hidden="true" className="h-4 w-4" />Ask for suggestions
+              </button>
+            </div>
+            {reportRecommendations.length === 0 ? (
+              <Card className="rounded-2xl border-dashed border-navy/15 bg-white/70 p-4 text-sm text-navy/65">Ask the assistant for recommendations about this report. Its action cards will appear here and in chat.</Card>
+            ) : (
+              <ul className="space-y-3">
+                {reportRecommendations.map((card) => {
+                  const added = addedRecommendationIds.has(card.card_id)
+                  const state = actionStates[card.card_id]
+                  const cannotAdd = user?.role === 'community' || (user?.role === 'engineer' && card.owner_role !== 'engineer')
+                  return <li key={card.card_id}>
+                    <Card className="overflow-hidden rounded-2xl border-navy/10 shadow-sm">
+                      <div className="border-b border-navy/5 bg-ivory/70 px-4 py-3">
+                        <h4 className="font-bold leading-snug">{card.title}</h4>
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                          <span className="rounded-full bg-navy/5 px-2.5 py-1 font-semibold">{categoryLabel(fx, card.category)}</span>
+                          <span className="rounded-full bg-teal/10 px-2.5 py-1 font-semibold text-teal">Owner: {ROLE_LABELS[card.owner_role]}</span>
+                          {card.evidence_needed.length > 0 && <span className="rounded-full bg-brass/15 px-2.5 py-1 font-semibold text-brass-700">Evidence: {card.evidence_needed.join(' + ')}</span>}
+                        </div>
+                      </div>
+                      <div className="px-4 py-3.5">
+                        <p className="text-sm leading-relaxed text-navy/80">{card.rationale}</p>
+                        <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-navy/60"><span className="font-bold">Cells</span>{card.cell_ids.map((id, index) => <span key={id}>{index > 0 && <span className="mr-2 text-navy/30">·</span>}<Link to={`/map?cell=${encodeURIComponent(id)}`} className="font-mono font-semibold text-teal underline decoration-teal/30 underline-offset-4 hover:decoration-teal">{id}</Link></span>)}</p>
+                        <div className="mt-4 flex flex-wrap items-center gap-2">
+                          {added ? <span className="inline-flex items-center gap-1.5 rounded-full bg-teal/10 px-3 py-2 text-xs font-bold text-teal"><Check aria-hidden="true" className="h-4 w-4" />In Progress</span>
+                            : cannotAdd ? <p className="text-xs font-semibold text-navy/65">{user?.role === 'community' ? 'Share this recommendation with the Road Authorities planning team to add it to the action plan.' : 'The Road Authorities planning team must assign this measure before it can be added.'}</p>
+                              : <button type="button" disabled={state?.adding} onClick={() => void addRecommendation(card)} className="rounded-lg bg-navy px-3.5 py-2 text-xs font-bold text-ivory transition hover:bg-navy-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass disabled:cursor-wait disabled:opacity-50">{state?.adding ? 'Adding…' : 'Add to Progress'}</button>}
+                          {state?.error && <span role="alert" className="text-xs font-semibold text-brick">{state.error}</span>}
+                        </div>
+                      </div>
+                    </Card>
+                  </li>
+                })}
               </ul>
             )}
           </section>

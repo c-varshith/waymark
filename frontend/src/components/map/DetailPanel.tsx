@@ -89,7 +89,7 @@ function MeasuresSection({ detail }: { detail: CellDetail }) {
       <h3 id="cell-measures" className="text-sm font-bold">Measures ({detail.measures.length})</h3>
       <details className="mt-2 text-xs text-navy/70">
         <summary className="flex min-h-7 cursor-pointer items-center gap-1 font-semibold"><Info aria-hidden="true" className="h-3.5 w-3.5" /> More info <ChevronDown aria-hidden="true" className="ml-auto h-3.5 w-3.5" /></summary>
-        <p className="pb-1 pl-5">Projection follows measure stage and is an estimate, not a model rerun. Only planner-verified measures lower confirmed adjusted risk.</p>
+        <p className="pb-1 pl-5">Projection follows measure stage and is an estimate, not a model rerun. Only measures verified by Road Authorities planning lower confirmed adjusted risk.</p>
       </details>
       <ul className="mt-2 space-y-1.5">
         {detail.measures.map((m) => (
@@ -280,7 +280,7 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
                 <div className="rounded-lg bg-white px-2.5 py-1.5"><dt className="text-xs font-semibold text-teal">Confirmed</dt><dd className="text-base font-bold">{detail.incident_confirmed_count ?? 0}</dd></div>
                 <div className="rounded-lg bg-white px-2.5 py-1.5"><dt className="text-xs font-semibold text-brass-700">Pending</dt><dd className="text-base font-bold">{detail.incident_pending_count ?? 0}</dd></div>
               </dl>
-              <details className="mt-1.5 text-xs text-navy/65"><summary className="flex min-h-7 cursor-pointer items-center gap-1 font-semibold"><Info aria-hidden="true" className="h-3.5 w-3.5" /> More info <ChevronDown aria-hidden="true" className="ml-auto h-3.5 w-3.5" /></summary><p className="pb-1 pl-5">Reported activity is separate from the historical model score. Pending reports await City Planner review.</p></details>
+              <details className="mt-1.5 text-xs text-navy/65"><summary className="flex min-h-7 cursor-pointer items-center gap-1 font-semibold"><Info aria-hidden="true" className="h-3.5 w-3.5" /> More info <ChevronDown aria-hidden="true" className="ml-auto h-3.5 w-3.5" /></summary><p className="pb-1 pl-5">Reported activity is separate from the historical model score. Pending reports await Road Authority review.</p></details>
             </section>
             <details className="text-xs text-navy/65"><summary className="flex min-h-7 cursor-pointer items-center gap-1 font-semibold"><Info aria-hidden="true" className="h-3.5 w-3.5" /> About this score <ChevronDown aria-hidden="true" className="ml-auto h-3.5 w-3.5" /></summary><p className="pb-1 pl-5">Historical backtest likelihood of reaching three or more crashes. This is not a calibrated live forecast.</p></details>
 

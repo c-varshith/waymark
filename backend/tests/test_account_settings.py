@@ -62,9 +62,9 @@ def test_profile_and_password_routes_reject_demo_accounts(ops):
 
 def test_workspace_labels_match_role_ids():
     assert ROLE_LABELS == {
-        Role.planner: "City Planners",
-        Role.engineer: "Road Authorities",
-        Role.community: "Traffic Police",
+        Role.planner: "Road Authorities — planning",
+        Role.engineer: "Road Authority field teams — delivery",
+        Role.community: "User",
     }
 
 

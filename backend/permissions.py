@@ -5,7 +5,7 @@ from typing import Callable
 
 from fastapi import Depends, HTTPException
 
-from .auth import Role, User, current_user
+from .auth import ROLE_LABELS, Role, User, current_user
 
 P, E, C = Role.planner, Role.engineer, Role.community
 
@@ -16,7 +16,7 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "measure.create": frozenset({P, E}),
     "measure.transition": frozenset({P, E}),         # every non-verify status change
     "measure.comment": frozenset({P, E, C}),
-    "evidence.upload": frozenset({P, E}),            # Traffic Police add observations as comments, not evidence
+    "evidence.upload": frozenset({P, E}),            # Users add observations as comments, not implementation evidence
     "evidence.read": frozenset({P, E, C}),
     "measure.verify": frozenset({P}),                # approve or reject
     "incident.read": frozenset({P, E, C}),
@@ -36,7 +36,7 @@ def require_permission(action: str) -> Callable[[User], User]:
     def dep(user: User = Depends(current_user)) -> User:
         if not can(user.role, action):
             raise HTTPException(403, detail={"code": "forbidden",
-                                             "message": f"Your role ({user.role.value}) cannot do this ({action})."})
+                                             "message": f"Your role ({ROLE_LABELS[user.role]}) cannot do this ({action})."})
         return user
 
     return dep

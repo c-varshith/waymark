@@ -61,9 +61,9 @@ const CARDS = [
 ] as const;
 
 const AUDIENCE = [
-  { icon: Building2, label: "Road authorities", note: "prioritise site audits" },
-  { icon: MapIcon, label: "City planners", note: "target corridor upgrades" },
-  { icon: Shield, label: "Traffic police", note: "focus preventive presence" },
+  { icon: Building2, label: "Road Authorities — planning", note: "review suggested actions and plan measures" },
+  { icon: MapIcon, label: "Road Authority field teams", note: "deliver assigned safety measures" },
+  { icon: Shield, label: "Users", note: "report crashes and enable proximity alerts" },
 ] as const;
 
 const INTERVENTION_CHIPS = [

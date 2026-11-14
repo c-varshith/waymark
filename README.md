@@ -43,6 +43,7 @@ The project is a predictive safety intelligence layer: it is designed to support
 | Frontend | React, TypeScript, Vite, Leaflet, and H3 |
 | Map tiles | OpenStreetMap by default; optional MapTiler styles |
 | Assistant | Optional Groq or Anthropic integration, with a rule-based fallback |
+| Workspaces | Road Authorities — planning; Road Authority field teams — delivery; User |
 
 ## Features
 
@@ -51,16 +52,24 @@ The project is a predictive safety intelligence layer: it is designed to support
 - **Compare scenarios:** explore night, rain, and low-visibility inputs. These are simulations, not live weather forecasts.
 - **Review model evidence:** inspect backtest metrics, robustness comparisons, and data-quality checks with their caveats.
 - **Prioritize field work:** search and export the emerging-risk audit list; generate region reports with PDF and JSON downloads.
-- **Track safety measures:** record implementation progress, attach evidence, and request planner review. Adjusted scores and progress projections are illustrative overlays; they do not retrain or rerun the model.
-- **Report incidents:** submit crash or near-miss reports for review. The live inference API returns a separate, capped incident overlay; it does not alter the trained model score.
-- **View live traffic:** display cached TomTom congestion with attribution. An optional experimental congestion adjustment can affect Live scores only when a licensed historical traffic archive passes held-out validation and `WAYMARK_TRAFFIC_LIFT=1` is explicitly enabled; it is off by default and never changes Baseline scores. Live TomTom readings are not stored as training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
+- **Track safety measures:** Road Authorities review report-backed suggestions, add selected actions to the plan, and monitor delivery; field teams record implementation progress and attach evidence for review. Suggestions can be added from Analysis or AI chat and then appear in Progress. Adjusted scores and progress projections are illustrative overlays; they do not retrain or rerun the model.
+- **Report incidents and get alerts:** Users submit crash or near-miss reports and can enable browser-based proximity alerts for nearby high-risk cells. The live inference API returns a separate, capped incident overlay; it does not alter the trained model score.
+- **View live context:** Open-Meteo weather and TomTom traffic are fetched and cached server-side. Weather associations are context-only by default. Traffic is a display layer by default; an experimental score adjustment requires a licensed historical archive, a passing held-out validation, a packaged lift artifact, and explicit `WAYMARK_TRAFFIC_LIFT=1` opt-in. Live provider readings are not training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
 - **Ask questions:** use the optional report-aware assistant for structured suggestions and discussion.
+
+### Workspaces and responsibilities
+
+- **User:** submits crash and near-miss reports and may opt in to browser proximity alerts.
+- **Road Authorities — planning:** reviews reports and analysis, chooses suggested safety measures, and tracks the resulting plan.
+- **Road Authority field teams — delivery:** updates assigned measure progress and submits evidence for review.
+
+AI-generated actions are recommendations for human review. Adding an action to Progress records it as planned work; it does not mean the work has been approved, completed, or proven effective.
 
 ## Quick start
 
 ### Requirements
 
-- Python 3.11 or later
+- Python 3.12 (the pinned project runtime; see `.python-version`)
 - Node.js 20 or later and npm
 - The packaged model files in `backend/ml_artifacts/` and feature store in `out/`
 
@@ -116,16 +125,54 @@ The default map uses OpenStreetMap and does not need an API key. To use MapTiler
 
 ## Architecture
 
+Training and validation happen offline. One FastAPI service loads the packaged model and cell features into memory, polls external providers into server-side caches, handles reports and measures, and serves the React application through REST and Server-Sent Events (SSE). Provider credentials stay on the server. The browser does not call weather or traffic providers directly.
+
 ```mermaid
 flowchart LR
-    UI[React + Leaflet map] --> API[FastAPI]
-    API --> DB[(SQLite / PostgreSQL)]
-    API --> RT[In-memory inference runtime]
-    RT --> MODEL[LightGBM ensemble]
-    RT --> SHAP[SHAP explainer]
-    RT --> FEATURES[H3 feature store]
-    API --> FILES[Local files / Supabase Storage]
+    subgraph OFFLINE[Offline data preparation and training]
+        CSV[US Accidents CSV<br/>Houston study subset<br/>2016–2023 crash records]
+        FE[H3 resolution 9<br/>Crash history and fields recorded at crashes<br/>18 packaged model features<br/>No OSM features in current model]
+        TRAIN[Train and backtest<br/>Three LightGBM models<br/>SHAP explainer]
+        ART[Runtime package<br/>model.pkl · explainer.pkl<br/>feature_schema.json<br/>H3 cell feature store]
+        CSV --> FE --> TRAIN --> ART
+    end
+
+    subgraph RENDER[Render · single FastAPI backend service]
+        API[REST API<br/>Inference · reports · incidents<br/>measures · evidence · assistant]
+        RT[In-memory runtime<br/>Ensemble scoring and SHAP<br/>cell-level incident overlay]
+        DB[(SQLite locally<br/>PostgreSQL in deployment)]
+        FILES[(Private report and evidence files<br/>local storage or Supabase Storage)]
+        STREAM[SSE event stream<br/>cell-level live updates]
+        WEATHER[Open-Meteo<br/>background poller + cache]
+        TRAFFIC[TomTom Traffic Flow<br/>server-side tile proxy + cache]
+        ASSIST[Optional Groq or Anthropic<br/>report-grounded answers<br/>rule-based fallback]
+        CONDITIONS[Weather condition context<br/>ranking flag off by default]
+        TRAFFIC_LIFT[Experimental traffic lift<br/>Live mode only; off by default<br/>requires validated archive + artifact + opt-in]
+        API --> RT
+        API <--> DB
+        API <--> FILES
+        API -->|SSE route| STREAM
+        RT -->|score and incident events| STREAM
+        WEATHER -->|polled readings| RT
+        TRAFFIC -->|polled readings / tile requests| RT
+        ASSIST <--> API
+        CONDITIONS -. loaded artifact .-> RT
+        TRAFFIC_LIFT -. optional artifact + flag .-> RT
+    end
+
+    subgraph CLIENT[Render · React static frontend]
+        UI[React · Leaflet · H3<br/>Risk map and analysis]
+        ROLES[Road Authorities — planning<br/>Road Authority field teams — delivery<br/>User]
+        UI --- ROLES
+    end
+
+    ART -->|startup load| RT
+    API <-->|JSON requests / responses| UI
+    STREAM -->|cell-level live events| UI
+    UI -->|User incident reports| API
 ```
+
+The checked-in runtime feature schema contains 18 crash-history and crash-record features. The repository has separate OSM extraction utilities, but the packaged live model does **not** currently use OSM-derived road-network features. Weather associations are loaded for live context, but `WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING` defaults to `false`. TomTom traffic remains a display layer unless a separately licensed archive passes validation, a lift artifact is packaged, and `WAYMARK_TRAFFIC_LIFT=1` is explicitly set. The experimental traffic lift applies only to Live mode; it never changes Baseline scores. The current repository does not include a traffic-lift artifact, so traffic does not currently adjust scores.
 
 ### Repository layout
 
@@ -146,9 +193,9 @@ For frontend-specific routes and behavior, see [`frontend/README.md`](frontend/R
 
 ## Model and data
 
-The packaged model was trained using the US Accidents dataset (2016–2023), attributed to Sobhan Moosavi and collaborators. The raw source dataset is not included. Review the original dataset's terms and confirm provenance before redistributing or using derived data operationally.
+The packaged three-model LightGBM ensemble was trained using the Houston-area subset of the US Accidents dataset (2016–2023), attributed to Sobhan Moosavi and collaborators. Its 18 inputs describe cell-level crash history and fields recorded on accident rows, such as junction, crossing, visibility, and weather context. OSM extraction and comparison utilities exist in `pipeline/external/`, but OSM features are not in the checked-in runtime schema or current model. Adding OSM features requires rebuilding the feature store, retraining, and evaluating a new model package. The raw source dataset is not included in Git. Review the original dataset's terms and confirm provenance before redistributing or using derived data operationally.
 
-At startup, FastAPI loads the packaged LightGBM ensemble, SHAP explainer, feature schema, and H3 feature store into memory. The inference API supports single-cell scoring and batch scoring with optional scenario overrides. It does not update model weights during requests.
+At startup, FastAPI loads the packaged LightGBM ensemble, SHAP explainer, feature schema, and H3 feature store into memory. It averages the three models' positive-class probabilities and maps the result to a relative 0–100 percentile score. The inference API supports single-cell scoring and batch scoring with optional scenario overrides. It does not update model weights during requests.
 
 - `risk_probability` is the model's positive-class probability.
 - `risk_score` is the probability's percentile against the saved reference distribution, on a 0–100 scale. It is **not calibrated** and should not be interpreted as a percentage chance of a crash.
@@ -184,9 +231,13 @@ The displayed score ranks a model probability against a saved reference distribu
 
 LightGBM is used to score the project's structured, tabular cell features efficiently. SHAP provides a breakdown of which model inputs contributed to a selected cell's output. These contributions describe the model's calculation; they do not establish that a factor caused crashes or that changing it will prevent them.
 
+### Does the current model use OpenStreetMap road features?
+
+No. The repository contains utilities to collect and compare OSM features, but the checked-in model schema contains crash-history and accident-record fields only. OSM-derived road structure would require building a new feature store, retraining the model, and validating the resulting package before it could be used for scoring.
+
 ### What does “Live” mode update?
 
-Live mode reads cached provider context and reports its freshness or availability. By default, weather conditions are explanatory context and do not change the model ranking. Incident reports are shown as a separate, decaying overlay; they do not retrain the model. Experimental traffic scoring is disabled by default and requires a separately licensed historical traffic archive, a passing held-out validation, and explicit backend opt-in. Live provider readings are not saved as training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
+Live mode reads cached Open-Meteo weather context and TomTom traffic data, and reports provider freshness or availability. Weather conditions are explanatory context and do not change the ranking by default. Traffic is a map display layer; its optional experimental score adjustment is off by default and currently has no traffic-lift artifact in this repository. Enabling it requires a licensed historical archive, a passing held-out validation, a packaged artifact, and explicit backend opt-in. User incident reports are stored separately and appear as a decaying overlay; they do not retrain the model. Live provider readings are not saved as training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
 
 ### Why not train continuously from reports or live traffic?
 
@@ -204,7 +255,7 @@ FastAPI's OpenAPI reference is available at `/docs` when the backend is running.
 | --- | --- |
 | Health | `GET /api/health`, `GET /api/health/model` |
 | Cells and crash points | `GET /api/cells`, `GET /api/cells/{cell_id}`, `GET /api/crashes` |
-| Live inference | `POST /api/predict`, `POST /api/predict/batch` |
+| Live inference and context | `POST /api/predict`, `POST /api/predict/batch`, `GET /api/live/context`, `GET /api/stream` (SSE) |
 | Scenarios and evidence | `GET /api/whatif`, `GET /api/metrics`, `GET /api/validation` |
 | Reports and regions | `/api/reports`, `GET /api/regions/resolve`, `GET /api/places` |
 | Incidents | `POST /api/incident`, `/api/incidents` |
@@ -226,6 +277,9 @@ Backend settings can be supplied as environment variables or in the root `.env` 
 | `WAYMARK_ML_ARTIFACT_DIR` | Model artifact directory; defaults to `backend/ml_artifacts/`. |
 | `WAYMARK_ML_FEATURE_STORE` | H3 feature CSV; defaults to `out/cell_features.csv`. |
 | `WAYMARK_DATA_DIR` | Local directory for generated reports and evidence files. |
+| `WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING` | Defaults to `false`; weather-condition associations remain context-only unless explicitly enabled. |
+| `WAYMARK_TRAFFIC_API_KEY` | Optional server-side TomTom key for live traffic. Never put it in a `VITE_*` variable. |
+| `WAYMARK_TRAFFIC_LIFT` | Defaults to `false`; enables experimental traffic adjustment in Live mode only when a validated artifact is present. |
 
 See [`.env.example`](.env.example) and [`frontend/.env.example`](frontend/.env.example) for the full set of supported values. Do not commit secrets or production environment files.
 
@@ -237,19 +291,19 @@ The training and data preparation workflow is separate from online inference:
 2. Validate and export database-ready outputs with the scripts in `pipeline/`.
 3. Load the generated tables into a local database with `python pipeline/load_db.py` when building a fresh development dataset.
 
-Use each script's `--help` output to review its inputs and write behavior. Back up the database and `data/` before performing data migrations or rebuilds. The app's live inference endpoints load fixed model weights and update scenario inputs or the process-local incident overlay only.
+Use each script's `--help` output to review its inputs and write behavior. Back up the database and `data/` before performing data migrations or rebuilds. The app's live inference endpoints load fixed model weights and update scenario inputs or the process-local incident overlay. Live weather and traffic are separately polled into server-side caches; they do not become training data. Weather is context-only by default, and traffic is display-only unless the experimental traffic-lift gate is deliberately enabled.
 
 ## Deployment
 
-The intended deployment separates the React frontend (Vercel) from the FastAPI service (Render), with Supabase Postgres and private Supabase Storage for persistent production data.
+The public demo uses a Render-hosted React frontend and a separate Render FastAPI web service. Supabase PostgreSQL and private Supabase Storage can provide persistent production data and evidence files; local development uses SQLite and local files.
 
-- Deploy the frontend with `frontend/` as the root directory and `dist` as the output directory.
+- Deploy the frontend as a Render Static Site with `frontend/` as the root directory and `dist` as the publish directory. Add the SPA rewrite required for direct client-side routes such as `/map` and `/region/...`.
 - Deploy the backend from the repository root with `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`.
 - Set `VITE_API_BASE` to the backend's public origin and configure the backend CORS allowlist to include the frontend origin.
 - Set the database, storage, and JWT secrets in the backend's hosting environment. Never put server credentials in `VITE_*` variables.
 - Apply the appropriate SQL migrations before connecting a production backend. Keep persistent database and file backups.
 
-Refer to the [frontend deployment notes](frontend/README.md#build-preview-and-deployment) and the SQL files under [`supabase/`](supabase/) before deploying.
+Refer to the [frontend deployment notes](frontend/README.md#render-deployment) and the SQL files under [`supabase/`](supabase/) before deploying.
 
 ## Development checks
 

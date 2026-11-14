@@ -416,7 +416,7 @@ export default function MapPage() {
 
   const [pickIncidentMode, setPickIncidentMode] = useState(false)
   const [incidentPoint, setIncidentPoint] = useState<[number, number] | null>(null)
-  const isTrafficPolice = user?.role === 'community'
+  const canReportIncidents = user?.role === 'community'
   const demoDetail = demoStep !== null && detail?.cell_id === DEMO_CELLS[demoStep] ? detail : null
   const [toast, setToast] = useState<ToastData | null>(null)
   const toastId = useRef(0)
@@ -894,7 +894,7 @@ export default function MapPage() {
                 onPickSim={() => { setPickIncidentMode(false); setPickSimMode((v) => !v) }}
                 onClearSim={() => { driver.setSimPosition(null); setPickSimMode(false); setMonitor({ kind: 'idle' }); alertedCells.current.clear() }}
               />
-              {isTrafficPolice && <button type="button" onClick={() => { setPickSimMode(false); setPickIncidentMode((v) => !v) }} aria-pressed={pickIncidentMode}
+              {canReportIncidents && <button type="button" onClick={() => { setPickSimMode(false); setPickIncidentMode((v) => !v) }} aria-pressed={pickIncidentMode}
                 aria-label={pickIncidentMode ? 'Cancel incident location selection' : 'Report a crash or near miss'}
                 className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-card md:min-h-9 sm:text-sm ${pickIncidentMode ? 'bg-brass text-navy' : 'bg-navy text-ivory hover:bg-navy-800'}`}>
                 <MapPin aria-hidden="true" className="h-3.5 w-3.5" /> {pickIncidentMode ? 'Cancel report' : 'Report incident'}
