@@ -30,9 +30,8 @@ function segmentTooltip(item: LiveTrafficCell): string {
 }
 
 /**
- * Live traffic, display only. Two layers, both above the risk hexagons and below markers:
- *  - the street network coloured by TomTom flow tiles (relayed by the API, key stays on the server);
- *  - the watched hotspot road segments, drawn along the road with a white casing and a tooltip.
+ * Live traffic, display only. The flow tiles are visual-only; watched road segments sit beneath
+ * the clickable H3 cells so enabling traffic does not block cell selection.
  */
 export function TrafficLayer({ data }: { data: LiveTraffic }) {
   const segments = (data.status === 'ok' || data.status === 'stale' || data.status === 'budget_reached')
@@ -56,7 +55,7 @@ export function TrafficLayer({ data }: { data: LiveTraffic }) {
         </Pane>
       )}
       {segments.length > 0 && (
-        <Pane name="traffic-segments" style={{ zIndex: 430 }}>
+        <Pane name="traffic-segments" style={{ zIndex: 399 }}>
           {segments.map((item) => (
             <Fragment key={`traffic-${item.cell_id}`}>
               <Polyline
