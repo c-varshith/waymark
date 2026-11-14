@@ -1,8 +1,14 @@
-"""TomTom traffic display cache and cell-only request budget.
+"""TomTom traffic display: segment cache, flow-tile proxy and request budgets.
 
-Provider IO runs only in the background poller. Raw speeds are used transiently to
-derive a display bucket and are never cached, logged, or persisted. This module is
-intentionally disconnected from model scoring and ranking.
+Two display paths, both disconnected from model scoring and ranking:
+
+* Watched segments. The background poller asks TomTom's Flow Segment Data API about the road
+  segment at a few high-risk cells. Raw speeds are used transiently to derive a display bucket and
+  are never cached, logged, or persisted; the segment's road geometry is kept in memory so the
+  map can draw the congestion along the street rather than as a dot.
+* Street network. ``TrafficTileProxy`` relays TomTom raster flow tiles so every street in view is
+  coloured by congestion. The key stays on the server; tiles are cached briefly and counted
+  against a daily tile cap.
 """
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ import logging
 import math
 import os
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -93,15 +99,40 @@ class TomTomTrafficProvider:
                 or not isinstance(confidence, (int, float)) or not isinstance(frc, str)
                 or not isinstance(road_closure, bool)):
             raise ValueError("TomTom flow response fields were malformed")
-        coords = row.get("coordinates", {}).get("coordinate", [])
+        coords = (row.get("coordinates") or {}).get("coordinate", [])
+        geometry = segment_geometry(coords)
         segment_key = None
-        if isinstance(coords, list) and coords:
-            compact = ";".join(f"{p.get('latitude')},{p.get('longitude')}" for p in coords if isinstance(p, dict))
-            if compact:
-                segment_key = hashlib.sha256(compact.encode()).hexdigest()
+        if geometry:
+            compact = ";".join(f"{lat},{lng}" for lat, lng in geometry)
+            segment_key = hashlib.sha256(compact.encode()).hexdigest()
         return {"current_speed": float(current), "free_flow_speed": float(free),
                 "confidence": float(confidence), "frc": frc, "road_closure": road_closure,
-                "segment_key": segment_key}
+                "segment_key": segment_key, "geometry": geometry}
+
+
+MAX_SEGMENT_POINTS = 120
+
+
+def segment_geometry(coords: Any, max_points: int = MAX_SEGMENT_POINTS) -> list[tuple[float, float]]:
+    """TomTom segment coordinates -> [(lat, lng), ...], rounded to ~1 m and thinned to ``max_points``."""
+    if not isinstance(coords, list):
+        return []
+    points: list[tuple[float, float]] = []
+    for item in coords:
+        if not isinstance(item, dict):
+            continue
+        lat, lng = item.get("latitude"), item.get("longitude")
+        if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180):
+            continue
+        point = (round(float(lat), 6), round(float(lng), 6))
+        if not points or points[-1] != point:
+            points.append(point)
+    if len(points) > max_points:
+        step = (len(points) - 1) / (max_points - 1)
+        points = [points[round(i * step)] for i in range(max_points)]
+    return points if len(points) >= 2 else []
 
 
 def densest_crash_points(cell_ids: list[str], rows: list[tuple[str, float, float]]) -> dict[str, tuple[float, float]]:
@@ -186,7 +217,12 @@ class TrafficManager:
         self._loop: asyncio.AbstractEventLoop | None = None
 
     def configure_watchlist(self, runtime: Any) -> int:
-        """Build ranked candidate coordinates from historical crashes, never cell centres."""
+        """Build ranked candidate coordinates for the highest-risk cells.
+
+        The densest historical crash spot in a cell is preferred because it sits on the road where crashes
+        happen. When crash points were never imported the cell centre is used instead; TomTom snaps a point
+        to the nearest road segment and minor roads (FRC5+) are rejected during polling.
+        """
         try:
             with SessionLocal() as session:
                 cells = session.scalars(select(Cell).where(Cell.n_past_crashes > 0)
@@ -201,14 +237,24 @@ class TrafficManager:
                     cells_by_id = by_id
                 else:
                     cells_by_id = {cell.cell_id: cell for cell in cells[: max(64, config.TRAFFIC_WATCH_SIZE * 8)]}
-                crash_rows = session.execute(select(Crash.cell_id, Crash.lat, Crash.lng)
-                                             .where(Crash.cell_id.in_(ids))).all() if ids else []
         except SQLAlchemyError:
-            log.warning("Traffic watch list unavailable: historical crash points are not loaded")
+            log.warning("Traffic watch list unavailable: scored cells could not be read")
             self.candidates = []
             self.watchlist = []
             return 0
+        crash_rows: list[Any] = []
+        if ids:
+            try:
+                with SessionLocal() as session:
+                    crash_rows = session.execute(select(Crash.cell_id, Crash.lat, Crash.lng)
+                                                 .where(Crash.cell_id.in_(ids))).all()
+            except SQLAlchemyError:
+                log.info("Crash points are not loaded; traffic probes use cell centres")
         points = densest_crash_points(ids, [(cid, float(lat), float(lng)) for cid, lat, lng in crash_rows])
+        for cid in ids:
+            cell = cells_by_id.get(cid)
+            if cid not in points and cell is not None and cell.lat is not None and cell.lng is not None:
+                points[cid] = (float(cell.lat), float(cell.lng))
         active_order = {cid: index for index, cid in enumerate(active)}
         self.candidates = []
         for cid in ids:
@@ -268,6 +314,7 @@ class TrafficManager:
                 cells.append({"cell_id": cid, "bucket": row["bucket"],
                               "observed_at": row["observed_at"],
                               "road_closure": row["road_closure"],
+                              "geometry": [list(point) for point in row.get("geometry") or []],
                               "status": "ok" if status == "ok" and (now - row["_observed_dt"]).total_seconds() <= fresh_seconds else "stale"})
         return {
             "status": status,
@@ -282,6 +329,7 @@ class TrafficManager:
             "monthly_cap": quota_limits()[0],
             "score_effect": False,
             "error": self._last_error,
+            "tiles": tile_proxy_info(self.provider),
         }
 
     async def _reserve(self) -> bool:
@@ -315,7 +363,8 @@ class TrafficManager:
         stamp = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         return {"bucket": bucket, "observed_at": stamp, "_observed_dt": now,
                 "road_closure": bool(reading["road_closure"]),
-                "frc": reading["frc"], "segment_key": reading.get("segment_key")}, True
+                "frc": reading["frc"], "segment_key": reading.get("segment_key"),
+                "geometry": list(reading.get("geometry") or [])}, True
 
     async def poll_once(self) -> dict[str, Any]:
         now = self.clock()
@@ -377,7 +426,7 @@ class TrafficManager:
             if segment:
                 seen_segments.add(segment)
             old = self.readings.get(cid)
-            self.readings[cid] = {key: row[key] for key in ("bucket", "observed_at", "_observed_dt", "road_closure")}
+            self.readings[cid] = {key: row[key] for key in ("bucket", "observed_at", "_observed_dt", "road_closure", "geometry")}
             selected.append(cid)
             last_event = self._last_event.get(cid)
             if self.broadcaster and (old is None or old["bucket"] != row["bucket"]):
@@ -406,6 +455,106 @@ class TrafficManager:
                 pass
             finally:
                 self._wake_event.clear()
+
+
+TILE_URL = "https://api.tomtom.com/traffic/map/4/tile/flow/{style}/{z}/{x}/{y}.png"
+TILE_PATH = "/api/live/traffic/tiles/{z}/{x}/{y}.png"
+
+
+class TileBudgetExceeded(RuntimeError):
+    pass
+
+
+class TrafficTileProxy:
+    """Relay TomTom raster flow tiles so the browser never sees the key.
+
+    Tiles are cached for ``ttl`` seconds (TomTom refreshes flow about once a minute) and fresh
+    upstream fetches are counted against a per-UTC-day cap that stays under the free tile quota.
+    """
+
+    def __init__(self, *, api_key: str | None = None, transport: httpx.AsyncBaseTransport | None = None,
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+        self.api_key = api_key if api_key is not None else os.getenv("WAYMARK_TRAFFIC_API_KEY")
+        self.transport = transport
+        self.clock = clock
+        self.ttl = config.TRAFFIC_TILE_TTL_SECONDS
+        self.max_entries = config.TRAFFIC_TILE_CACHE_SIZE
+        self._cache: "OrderedDict[tuple[int, int, int], tuple[float, bytes]]" = OrderedDict()
+        self._day: str | None = None
+        self._count = 0
+        self._inflight: dict[tuple[int, int, int], asyncio.Future[bytes]] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key) and config.TRAFFIC_TILES_ENABLED
+
+    def budget_left(self) -> int:
+        day = f"{self.clock():%Y%m%d}"
+        if day != self._day:
+            self._day, self._count = day, 0
+        return max(0, config.TRAFFIC_TILE_DAILY_CAP - self._count)
+
+    @staticmethod
+    def valid(z: int, x: int, y: int) -> bool:
+        if not config.TRAFFIC_TILE_MIN_ZOOM <= z <= config.TRAFFIC_TILE_MAX_ZOOM:
+            return False
+        n = 1 << z
+        return 0 <= x < n and 0 <= y < n
+
+    async def tile(self, z: int, x: int, y: int) -> bytes:
+        key = (z, x, y)
+        now = time.monotonic()
+        hit = self._cache.get(key)
+        if hit and now - hit[0] <= self.ttl:
+            self._cache.move_to_end(key)
+            return hit[1]
+        pending = self._inflight.get(key)
+        if pending is not None:                      # many viewers asking for the same tile share one fetch
+            return await asyncio.shield(pending)
+        if self.budget_left() <= 0:
+            if hit:                                   # serve the last copy rather than nothing
+                return hit[1]
+            raise TileBudgetExceeded("Daily traffic tile budget reached")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes] = loop.create_future()
+        self._inflight[key] = future
+        try:
+            self._count += 1
+            params = {"key": self.api_key, "tileSize": 256}
+            if config.TRAFFIC_TILE_THICKNESS:
+                params["thickness"] = config.TRAFFIC_TILE_THICKNESS
+            async with httpx.AsyncClient(timeout=5.0, transport=self.transport) as client:
+                response = await client.get(TILE_URL.format(style=config.TRAFFIC_TILE_STYLE, z=z, x=x, y=y),
+                                            params=params)
+                response.raise_for_status()
+                body = response.content
+            if not body.startswith(b"\x89PNG"):
+                raise ValueError("TomTom tile response was not a PNG")
+            self._cache[key] = (time.monotonic(), body)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.max_entries:
+                self._cache.popitem(last=False)
+            future.set_result(body)
+            return body
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+                future.exception()                     # mark retrieved so asyncio does not warn
+            raise
+        finally:
+            self._inflight.pop(key, None)
+
+
+def tile_proxy_info(provider: Any = None) -> dict[str, Any]:
+    """What the map needs to draw the street-level traffic tile layer."""
+    key = getattr(provider, "api_key", None) if provider is not None else None
+    key = key if key is not None else os.getenv("WAYMARK_TRAFFIC_API_KEY")
+    return {
+        "available": bool(key) and config.TRAFFIC_TILES_ENABLED,
+        "url": TILE_PATH,
+        "min_zoom": config.TRAFFIC_TILE_MIN_ZOOM,
+        "max_zoom": config.TRAFFIC_TILE_MAX_ZOOM,
+    }
 
 
 class ConditionHistoryWriter:

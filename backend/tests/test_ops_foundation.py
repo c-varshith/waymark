@@ -81,7 +81,7 @@ def test_permission_table_matches_spec():
     p, e, c = Role.planner, Role.engineer, Role.community
     expected = {
         "report.create": {p, e, c}, "report.read": {p, e, c}, "chat.use": {p, e, c}, "measure.create": {p, e},
-        "measure.transition": {p, e}, "measure.comment": {p, e, c}, "evidence.upload": {p, e, c},
+        "measure.transition": {p, e}, "measure.comment": {p, e, c}, "evidence.upload": {p, e},
         "evidence.read": {p, e, c}, "measure.verify": {p},
         "incident.read": {p, e, c}, "incident.create": {c}, "incident.review": {p},
     }

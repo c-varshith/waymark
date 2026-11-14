@@ -469,6 +469,16 @@ export interface LiveTrafficCell {
   observed_at: string
   road_closure: boolean
   status: 'ok' | 'stale'
+  /** Road segment as [lat, lng] pairs; drawn as a line along the street. Empty when the provider gave none. */
+  geometry: [number, number][]
+}
+
+export interface LiveTrafficTiles {
+  available: boolean
+  /** Absolute URL template for Leaflet, e.g. https://api.example.com/api/live/traffic/tiles/{z}/{x}/{y}.png */
+  url: string
+  min_zoom: number
+  max_zoom: number
 }
 
 export interface LiveTraffic {
@@ -484,6 +494,7 @@ export interface LiveTraffic {
   monthly_cap: number
   score_effect: false
   error: string | null
+  tiles: LiveTrafficTiles
 }
 
 export interface ModelHealth {
@@ -1060,10 +1071,26 @@ export const api = {
       if (!isRec(item) || typeof item.cell_id !== 'string' || typeof item.observed_at !== 'string') return []
       if (item.bucket !== 'free' && item.bucket !== 'moderate' && item.bucket !== 'heavy') return []
       const bucket: LiveTrafficCell['bucket'] = item.bucket
+      const geometry: [number, number][] = Array.isArray(item.geometry)
+        ? item.geometry.flatMap((point) => {
+          if (!Array.isArray(point) || point.length < 2) return []
+          const lat = num(point[0])
+          const lng = num(point[1])
+          return lat === null || lng === null ? [] : [[lat, lng] as [number, number]]
+        })
+        : []
       return [{ cell_id: item.cell_id, bucket, observed_at: item.observed_at,
         road_closure: bool(item.road_closure),
-        status: item.status === 'stale' ? 'stale' as const : 'ok' as const }]
+        status: item.status === 'stale' ? 'stale' as const : 'ok' as const,
+        geometry: geometry.length >= 2 ? geometry : [] }]
     }) : []
+    const t = isRec(raw.tiles) ? raw.tiles : {}
+    const tiles: LiveTrafficTiles = {
+      available: bool(t.available) && typeof t.url === 'string',
+      url: typeof t.url === 'string' ? `${API_BASE}${t.url}` : '',
+      min_zoom: num(t.min_zoom) ?? 9,
+      max_zoom: num(t.max_zoom) ?? 18,
+    }
     return {
       status, source: str(raw.source, 'Traffic provider'), attribution: str(raw.attribution), cells,
       watch_cells: Array.isArray(raw.watch_cells) ? raw.watch_cells.filter((id): id is string => typeof id === 'string') : [],
@@ -1072,6 +1099,7 @@ export const api = {
       daily_cap: num(raw.daily_cap) ?? 0, monthly_cap: num(raw.monthly_cap) ?? 0,
       score_effect: false,
       error: typeof raw.error === 'string' ? raw.error : null,
+      tiles,
     }
   },
 

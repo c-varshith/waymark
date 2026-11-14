@@ -16,7 +16,7 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "measure.create": frozenset({P, E}),
     "measure.transition": frozenset({P, E}),         # every non-verify status change
     "measure.comment": frozenset({P, E, C}),
-    "evidence.upload": frozenset({P, E, C}),
+    "evidence.upload": frozenset({P, E}),            # Traffic Police add observations as comments, not evidence
     "evidence.read": frozenset({P, E, C}),
     "measure.verify": frozenset({P}),                # approve or reject
     "incident.read": frozenset({P, E, C}),

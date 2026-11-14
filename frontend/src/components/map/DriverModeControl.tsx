@@ -63,7 +63,7 @@ export function DriverModeControl({
   const { text, tone } = statusText(status, monitor)
   const dot = tone === 'alert' ? 'bg-brick' : tone === 'warn' ? 'bg-brass' : 'bg-emerald-500'
   return (
-    <div className="order-2 flex max-w-full flex-col items-end gap-1.5 md:order-1">
+    <div className="flex max-w-full flex-col items-end gap-1.5">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         <button
           type="button"

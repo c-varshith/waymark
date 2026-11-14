@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, ChevronDown, Info } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, Info, PanelRightClose } from 'lucide-react'
 import type { CellDetail, LivePrediction, WhatIfCell } from '../../lib/api'
 import { fmtInt, fmtNum, fmtProb, fmtPts } from '../../lib/format'
 import { STALE_AFTER_SECONDS } from '../../lib/realtimeConfig'
@@ -14,6 +14,8 @@ interface Props {
   error: string | null
   onRetry: () => void
   onClose: () => void
+  /** Hide the panel but keep the cell selected, so the map behind it can be seen. */
+  onHide?: () => void
   /** Scenario values for this cell when a what-if scenario is active. */
   scenario: WhatIfCell | null
   scenarioLabel: string
@@ -116,7 +118,7 @@ function MeasuresSection({ detail }: { detail: CellDetail }) {
   )
 }
 
-export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError, scoreMode, conditionLiftApplied }: Props) {
+export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, onHide, scenario, scenarioLabel, livePrediction, livePredictionLoading, livePredictionError, scoreMode, conditionLiftApplied }: Props) {
   const ref = useRef<HTMLElement>(null)
   const [staleClock, setStaleClock] = useState(() => Date.now())
 
@@ -137,6 +139,14 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
   const contextLabel = livePrediction?.context_source === 'scenario' ? 'Scenario' : livePrediction?.context_source === 'live' ? 'Live' : 'Baseline'
   const overlayParams = livePrediction?.overlay_params
   const pendingWeight = overlayParams?.status_weights.pending
+  // Live mode only shows a live likelihood when the live prediction actually arrived.
+  const liveAvailable = scoreMode === 'live' && !!livePrediction && livePrediction.context_source === 'live'
+  const primaryLabel = scenario
+    ? `${scenarioLabel} likelihood (estimate)`
+    : liveAvailable ? 'Live condition-adjusted likelihood'
+      : scoreMode === 'live' && !livePredictionLoading ? 'Blackspot likelihood (live unavailable)'
+        : 'Blackspot likelihood'
+  const primaryValue = scenario ? scenario.scenario : liveAvailable ? livePrediction!.risk_probability : detail?.baseline_prob ?? null
 
   return (
     <aside
@@ -153,14 +163,27 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
             {[detail?.street_name, detail?.locality].filter(Boolean).join(', ') || 'Street / locality unavailable'}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close cell details"
-          className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg border border-navy/20 px-2.5 py-1.5 text-xs font-semibold hover:bg-ivory-200 sm:text-sm"
-        >
-          Close <span aria-hidden="true">×</span>
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onHide && (
+            <button
+              type="button"
+              onClick={onHide}
+              aria-label="Hide cell details and show the map"
+              title="Hide panel"
+              className="grid h-9 w-9 place-items-center rounded-lg border border-navy/20 text-navy/80 hover:bg-ivory-200"
+            >
+              <PanelRightClose aria-hidden="true" className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close cell details"
+            className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-navy/20 px-2.5 py-1.5 text-xs font-semibold hover:bg-ivory-200 sm:text-sm"
+          >
+            Close <span aria-hidden="true">×</span>
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3 overflow-y-auto px-3 py-3 sm:space-y-4 sm:px-4 sm:py-4">
@@ -188,22 +211,18 @@ export function DetailPanel({ cellId, detail, loading, error, onRetry, onClose, 
             </div>
 
             <dl className="grid grid-cols-2 gap-2">
-              <Stat
-                label={scenario ? `${scenarioLabel} likelihood (estimate)` : scoreMode === 'live' ? 'Live condition-adjusted likelihood' : 'Blackspot likelihood'}
-                value={fmtProb(scenario ? scenario.scenario : scoreMode === 'live' && livePrediction ? livePrediction.risk_probability : detail.baseline_prob)}
-                primary
-              />
+              <Stat label={primaryLabel} value={fmtProb(primaryValue)} primary />
               <Stat label="Past crashes" value={fmtInt(detail.n_past_crashes)} />
-              <Stat label="Live score (0 to 100)" value={livePrediction ? livePrediction.live_risk_score.toFixed(1) : '—'} />
+              <Stat label={livePrediction?.context_source === 'live' ? 'Live score (0–100)' : 'Current score (0–100)'} value={livePrediction ? livePrediction.live_risk_score.toFixed(1) : livePredictionLoading ? '…' : '—'} />
               {livePrediction && livePrediction.active_incident_count > 0 && overlayParams && (
                 <p className="col-span-2 -mt-1 text-xs font-medium text-navy/70">
-                  +{fmtPts(livePrediction.incident_overlay_points)} points from {livePrediction.active_incident_count} recent report{livePrediction.active_incident_count === 1 ? '' : 's'}
+                  +{livePrediction.incident_overlay_points.toFixed(1)} score points from {livePrediction.active_incident_count} recent report{livePrediction.active_incident_count === 1 ? '' : 's'}
                   {' '}(decays with a {fmtInt(overlayParams.half_life_minutes)} minute half-life{pendingWeight === undefined ? '' : `; pending reports count at ${Math.round(pendingWeight * 100)}%`})
                 </p>
               )}
-              <Stat label="Baseline" value={fmtNum(detail.risk_score, 3)} />
-              <Stat label="Verified" value={fmtNum(detail.adjusted_risk_score, 3)} />
-              <Stat label="Projected (estimate)" value={fmtNum(detail.projected_risk_score, 3)} />
+              <Stat label="Baseline score" value={fmtNum(detail.risk_score, 1)} />
+              <Stat label="Verified adjusted" value={fmtNum(detail.adjusted_risk_score, 1)} />
+              <Stat label="Projected (estimate)" value={fmtNum(detail.projected_risk_score, 1)} />
             </dl>
             {livePrediction && (
               <div className="flex flex-wrap items-center gap-2 text-xs text-navy/65" aria-live="polite">

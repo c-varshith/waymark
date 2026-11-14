@@ -153,7 +153,7 @@ def test_background_poll_publishes_cell_only_event_on_bucket_changes(monkeypatch
         assert name == "traffic.updated"
         assert set(payload) == {"cell_id", "bucket", "observed_at"}
         assert payload["cell_id"] == "cell-a" and payload["bucket"] == "free"
-        assert set(manager.readings["cell-a"]) == {"bucket", "observed_at", "_observed_dt", "road_closure"}
+        assert set(manager.readings["cell-a"]) == {"bucket", "observed_at", "_observed_dt", "road_closure", "geometry"}
 
     asyncio.run(scenario())
 
@@ -170,7 +170,7 @@ def test_traffic_cache_exposes_stale_buckets_but_not_as_fresh_after_budget():
     assert snapshot["status"] == "budget_reached"
     assert snapshot["cells"] == [{"cell_id": "cell-a", "bucket": "heavy",
                                   "observed_at": "2026-11-14T12:00:00Z", "road_closure": False,
-                                  "status": "stale"}]
+                                  "geometry": [], "status": "stale"}]
 
 
 def test_background_poll_waits_for_sse_client_and_circuit_breaker_recovers(monkeypatch):
@@ -354,3 +354,88 @@ def test_condition_history_export_contains_only_declared_cell_fields(tmp_path):
     body = path.read_text()
     assert body.splitlines()[0] == "cell_id,at,rain,night,rush,congestion_bucket,base_score,live_score,active_incident_count,model_version,condition_lift_version"
     assert "reporter" not in body and "note" not in body and "ip" not in body
+
+
+# ---------------------------------------------------------------- street geometry and flow tiles
+from backend.traffic import TileBudgetExceeded, TrafficTileProxy, segment_geometry, tile_proxy_info  # noqa: E402
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+
+
+def test_segment_geometry_keeps_the_road_shape_and_drops_junk():
+    coords = [{"latitude": 29.7 + i * 1e-4, "longitude": -95.4} for i in range(500)]
+    coords.insert(3, {"latitude": "x", "longitude": 1})
+    coords.insert(5, {"latitude": float("nan"), "longitude": -95.4})
+    line = segment_geometry(coords)
+    assert 2 <= len(line) <= 120
+    assert line[0] == (29.7, -95.4) and line[-1] == (round(29.7 + 499e-4, 6), -95.4)
+    assert segment_geometry([{"latitude": 29.7, "longitude": -95.4}]) == []      # one point is not a line
+    assert segment_geometry(None) == []
+
+
+def test_provider_returns_segment_geometry_for_the_map():
+    def respond(request):
+        return httpx.Response(200, json={"flowSegmentData": {
+            "frc": "FRC2", "currentSpeed": 20, "freeFlowSpeed": 40, "confidence": 0.9, "roadClosure": False,
+            "coordinates": {"coordinate": [{"latitude": 29.70, "longitude": -95.40},
+                                           {"latitude": 29.71, "longitude": -95.41}]},
+        }})
+    reading = asyncio.run(TomTomTrafficProvider("k", httpx.MockTransport(respond)).flow(29.7, -95.4))
+    assert reading["geometry"] == [(29.7, -95.4), (29.71, -95.41)] and reading["segment_key"]
+
+
+def test_snapshot_exposes_geometry_and_tile_info():
+    manager = TrafficManager(provider=TomTomTrafficProvider(api_key="k"), broadcaster=None)
+    now = datetime.now(timezone.utc)
+    manager.clock = lambda: now
+    manager.readings["cell-a"] = {"bucket": "heavy", "observed_at": "x", "_observed_dt": now,
+                                  "road_closure": False, "geometry": [(29.7, -95.4), (29.71, -95.41)]}
+    snap = manager.snapshot()
+    assert snap["status"] == "ok"
+    assert snap["cells"][0]["geometry"] == [[29.7, -95.4], [29.71, -95.41]]
+    assert snap["tiles"]["available"] is True and snap["tiles"]["url"].endswith("/{z}/{x}/{y}.png")
+    assert tile_proxy_info(TomTomTrafficProvider(api_key=""))["available"] is False
+
+
+def test_tile_proxy_caches_counts_and_hides_the_key():
+    calls = []
+
+    def respond(request):
+        calls.append(request.url)
+        return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+
+    proxy = TrafficTileProxy(api_key="tile-secret", transport=httpx.MockTransport(respond))
+
+    async def run():
+        a = await proxy.tile(12, 960, 1700)
+        b = await proxy.tile(12, 960, 1700)               # served from cache
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a == b == PNG and len(calls) == 1
+    assert "/flow/relative0/12/960/1700.png" in str(calls[0]) and calls[0].params["key"] == "tile-secret"
+    assert proxy.valid(12, 960, 1700) and not proxy.valid(3, 0, 0) and not proxy.valid(12, 5000, 0)
+
+
+def test_tile_proxy_stops_at_the_daily_cap(monkeypatch):
+    monkeypatch.setattr(config, "TRAFFIC_TILE_DAILY_CAP", 1)
+    proxy = TrafficTileProxy(api_key="k", transport=httpx.MockTransport(lambda r: httpx.Response(200, content=PNG)))
+
+    async def run():
+        await proxy.tile(12, 1, 1)
+        with pytest.raises(TileBudgetExceeded):
+            await proxy.tile(12, 1, 2)
+        assert await proxy.tile(12, 1, 1) == PNG          # cached tiles are still served
+    asyncio.run(run())
+
+
+def test_tile_route_is_404_without_a_key(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    monkeypatch.delenv("WAYMARK_TRAFFIC_API_KEY", raising=False)
+    app.state.traffic_tiles = TrafficTileProxy(api_key="")
+    try:
+        r = TestClient(app).get("/api/live/traffic/tiles/12/960/1700.png")
+        assert r.status_code == 404
+    finally:
+        app.state.traffic_tiles = None

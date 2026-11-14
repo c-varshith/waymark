@@ -128,7 +128,8 @@ def test_rate_limit_per_user(mm, monkeypatch):
     monkeypatch.setattr(settings, "upload_rate_per_min", 3)
     codes = [post(ops, h, mid, jpeg_bytes(color=(40 * i + 20, 90, 7 * i))).status_code for i in range(5)]
     assert codes == [201, 201, 201, 429, 429]
-    assert post(ops, auth(ops, "community"), mid, jpeg_bytes(color=(0, 9, 0))).status_code == 201   # another user is unaffected
+    assert post(ops, auth(ops, "planner"), mid, jpeg_bytes(color=(0, 9, 0))).status_code == 201   # another user is unaffected
+    assert post(ops, auth(ops, "community"), mid, jpeg_bytes(color=(0, 9, 9))).status_code == 403   # Traffic Police comment instead
 
 
 # ---------------------------------------------------------------- storage safety

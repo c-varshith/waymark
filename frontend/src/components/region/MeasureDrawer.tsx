@@ -172,8 +172,8 @@ export function MeasureDrawer({
               <div className="flex flex-wrap items-center gap-2">
                 <StatusChip status={m.status} />
                 <span className="text-sm">{categoryLabel(fx, m.category)}</span>
-                <span className="text-sm text-navy/70">· owner {ROLE_LABELS[m.owner_role]}</span>
-                <span className="text-sm text-navy/70">· weight {m.effect_weight} {fx?.placeholder_weights ? '(placeholder)' : ''}</span>
+                <span className="text-sm text-navy/70"><span aria-hidden="true" className="mr-1.5">·</span>Owner: {ROLE_LABELS[m.owner_role]}</span>
+                <span className="text-sm text-navy/70"><span aria-hidden="true" className="mr-1.5">·</span>Weight {m.effect_weight}{fx?.placeholder_weights ? ' (placeholder)' : ''}</span>
               </div>
               {m.description && <p className="text-navy/85">{m.description}</p>}
               <div className="rounded-xl border border-navy/10 bg-white p-3">
@@ -248,14 +248,14 @@ export function MeasureDrawer({
                 {m.status === 'verified' && <p className="rounded-lg bg-teal/10 px-3 py-2 font-semibold text-teal">✓ Verified. This measure now counts toward the adjusted risk estimate.</p>}
 
                 {open && canUpdatePlan && (
-                  confirmCancel ? (
-                    <span className="inline-flex items-center gap-2">
+                  <div className="border-t border-navy/10 pt-3">{confirmCancel ? (
+                    <span className="inline-flex flex-wrap items-center gap-2">
                       <button type="button" disabled={busy} onClick={() => void act(() => opsApi.cancelMeasure(m.id)).then(() => setConfirmCancel(false))} className="rounded-lg bg-brick px-3 py-1.5 text-sm font-semibold text-white">Yes, cancel this measure</button>
                       <button type="button" onClick={() => setConfirmCancel(false)} className="rounded-lg border border-navy/25 px-3 py-1.5 text-sm font-semibold">Keep it</button>
                     </span>
                   ) : (
                     <button type="button" onClick={() => setConfirmCancel(true)} className="text-sm font-semibold text-brick underline-offset-2 hover:underline">Cancel this measure…</button>
-                  )
+                  )}</div>
                 )}
               </section>
 

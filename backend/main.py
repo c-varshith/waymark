@@ -24,9 +24,10 @@ from .realtime import Broadcaster
 from .realtime import utc_iso
 from .realtime_config import SWEEP_SECONDS
 from .live_context import LiveContextManager
+from .models import Crash
 from .models_ops import IncidentReport, create_ops_tables
 from .storage import validate_storage_configuration
-from .traffic import ConditionHistoryWriter, TrafficManager
+from .traffic import ConditionHistoryWriter, TrafficManager, TrafficTileProxy
 from .routes import (audit, auth, cells, chat, crashes, evidence, incidents, live_context as live_context_routes,
                      measures, places, realtime, regions, reports, system,
                      predict, traffic as traffic_routes, validation, whatif)
@@ -83,6 +84,8 @@ async def lifespan(app: FastAPI):
         configure_sqlite()                         # configure concurrency before serving requests
         ensure_locality_indexes(engine)             # make locality autocomplete prefix searches index-backed
         create_ops_tables(engine)                  # local SQLite compatibility only
+        # Crash points are an optional import; an empty table keeps audit/locality joins working without it.
+        Crash.__table__.create(engine, checkfirst=True)
         database_ready = True
     elif not IS_SQLITE:
         validate_postgres_schema()                 # Postgres schema is managed by versioned migrations
@@ -108,6 +111,7 @@ async def lifespan(app: FastAPI):
     app.state.live_context = live_context
     context_task = asyncio.create_task(live_context.run(), name="waymark-live-context-poller")
     traffic_manager = TrafficManager(broadcaster=broadcaster)
+    app.state.traffic_tiles = TrafficTileProxy()
     app.state.traffic_manager = traffic_manager
     if app.state.ml_runtime is not None:
         await run_in_threadpool(traffic_manager.configure_watchlist, app.state.ml_runtime)
@@ -154,6 +158,7 @@ app.state.ml_runtime = None
 app.state.broadcaster = Broadcaster()
 app.state.live_context = None
 app.state.traffic_manager = None
+app.state.traffic_tiles = None
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)   # the full cell list is ~1.6 MB of JSON
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,

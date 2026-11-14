@@ -51,6 +51,14 @@ function signed(d: number | null): string {
   return `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(3)}`
 }
 
+/** Short axis labels so the three metrics never overlap on a phone. */
+function chartMetricLabel(metric: string): string {
+  const m = metric.toLowerCase().replace(/_/g, ' ')
+  if (m === 'auc') return 'AUC'
+  const top = m.match(/^(precision|capture) top ?(\d+)$/)
+  return top ? `${top[1] === 'precision' ? 'Precision' : 'Capture'} ${top[2]}%` : metric
+}
+
 function MetricTable({ rows, caption }: { rows: MetricRow[]; caption: string }) {
   return (
     <div className="sr-table-wrap">
@@ -201,7 +209,7 @@ export default function EvidencePage() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
                     <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#1e232722" />
-                    <XAxis dataKey="metric" tick={{ fontSize: 13 }} interval={0} />
+                    <XAxis dataKey="metric" tick={{ fontSize: 12 }} interval={0} tickFormatter={chartMetricLabel} height={36} />
                     <YAxis tick={{ fontSize: 13 }} />
                     <Tooltip formatter={(v) => (typeof v === 'number' ? v.toFixed(3) : String(v))} />
                     <ChartLegend wrapperStyle={{ fontSize: 14 }} />

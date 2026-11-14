@@ -18,7 +18,9 @@ def list_crashes(bbox: Optional[str] = Query(None, description="south,west,north
                  limit: int = Query(3000, ge=1, le=10000),
                  db: Session = Depends(get_db)):
     """Real crash locations (points) for the map. Needs a bbox or a cell_id so the whole table is never sent."""
-    if not inspect(db.get_bind()).has_table(Crash.__tablename__):
+    # The crash-point import (pipeline/load_crashes.py) is optional; an empty table means "not loaded".
+    if (not inspect(db.get_bind()).has_table(Crash.__tablename__)
+            or db.scalar(select(Crash.crash_id).limit(1)) is None):
         return CrashList(available=False, total=0, count=0, truncated=False, items=[])
     where = []
     if bbox:

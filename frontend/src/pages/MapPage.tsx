@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MapPin, SlidersHorizontal } from 'lucide-react'
-import { CircleMarker, MapContainer, TileLayer, Tooltip, ZoomControl } from 'react-leaflet'
+import type { CSSProperties } from 'react'
+import { MapPin, PanelRightOpen, SlidersHorizontal } from 'lucide-react'
+import { MapContainer, TileLayer, ZoomControl } from 'react-leaflet'
 import { useSearchParams } from 'react-router-dom'
 import { cellToParent, getResolution, gridDisk, latLngToCell } from 'h3-js'
 import 'leaflet/dist/leaflet.css'
@@ -30,11 +31,18 @@ import { useLiveStream } from '../hooks/useLiveStream'
 import { ALERT_THRESHOLD, DriverModeControl } from '../components/map/DriverModeControl'
 import type { MonitorState } from '../components/map/DriverModeControl'
 import { ALERT_HYSTERESIS } from '../lib/realtimeConfig'
+import { TrafficControl, TrafficLayer } from '../components/map/TrafficLayer'
 
 const BASE_LAYERS = baseLayers()
 const HOUSTON: [number, number] = [29.7604, -95.3698]
 const DEFAULT_FILTERS: Filters = { confidence: 'All', maxPast: Number.POSITIVE_INFINITY, emergingOnly: false }
 const NO_SCENARIO: Scenario = { night: false, rain: false, lowVis: false }
+const DESKTOP = '(min-width: 768px)'
+/** Below this width the filters column and the details column do not both fit beside the map. */
+const NARROW = '(max-width: 1279px)'
+function mediaMatches(query: string): boolean {
+  return typeof window !== 'undefined' && window.matchMedia(query).matches
+}
 type MapMode = 'baseline' | 'live' | 'what-if'
 /** How often the cell under the driver is re-scored while nothing else changes. */
 const ALERT_RECHECK_MS = 30_000
@@ -75,6 +83,9 @@ export default function MapPage() {
   const { user } = useAuth()
   const [params, setParams] = useSearchParams()
   const selectedId = params.get('cell')
+  // Side panes. Below xl there is not room for both next to a usable map, so opening one closes the other.
+  const [leftPaneOpen, setLeftPaneOpen] = useState(() => mediaMatches(DESKTOP) && !(selectedId && mediaMatches(NARROW)))
+  const [rightPaneOpen, setRightPaneOpen] = useState(true)
 
   const cellsQ = useApi(api.cells, [])
   const summaryQ = useApi(api.summary, [])
@@ -316,7 +327,10 @@ export default function MapPage() {
         if (c) setFlyTarget({ lat: c.lat, lng: c.lng, nonce: ++flyNonce.current })
         else pendingFly.current = id
       }
-      if (id) setRightPaneOpen(true)
+      if (id) {
+        setRightPaneOpen(true)
+        if (mediaMatches(NARROW)) setLeftPaneOpen(false)
+      }
     },
     [cellsById, setParams, region],
   )
@@ -401,8 +415,6 @@ export default function MapPage() {
     return null
   }, [region, placeSearch, selectedId])
 
-  const [leftPaneOpen, setLeftPaneOpen] = useState(() => window.matchMedia('(min-width: 768px)').matches)
-  const [rightPaneOpen, setRightPaneOpen] = useState(true)
   const [pickIncidentMode, setPickIncidentMode] = useState(false)
   const [incidentPoint, setIncidentPoint] = useState<[number, number] | null>(null)
   const isTrafficPolice = user?.role === 'community'
@@ -646,6 +658,26 @@ export default function MapPage() {
     alertedCells.current.clear()
   }
 
+  const openLeftPane = useCallback(() => {
+    setLeftPaneOpen(true)
+    if (mediaMatches(NARROW)) setRightPaneOpen(false)
+  }, [])
+  const collapseLeftPane = useCallback(() => {
+    setLeftPaneOpen(false)
+    setRightPaneOpen(true)
+  }, [])
+  const showDetails = useCallback(() => {
+    setRightPaneOpen(true)
+    if (mediaMatches(NARROW)) setLeftPaneOpen(false)
+  }, [])
+  const detailsVisible = !!selectedId && rightPaneOpen
+  // Keep Leaflet's zoom buttons and attribution clear of the details pane / sheet.
+  const overlayVars = {
+    '--wm-right': detailsVisible ? '27.25rem' : '0px',
+    '--wm-bottom': detailsVisible && !leftPaneOpen ? 'calc(min(58dvh, 560px) + 0.5rem)' : '0px',
+    '--wm-zoom-gutter': '3rem',
+  } as CSSProperties
+
   const searchPlaces = useCallback(
     (query: string, prefix = false, signal?: AbortSignal) => api.places(query, signal, prefix),
     [],
@@ -660,7 +692,7 @@ export default function MapPage() {
   }
 
   return (
-    <div className="relative h-[calc(100dvh-4rem)] min-h-[320px] w-full overflow-hidden" role="region" aria-label="Map of scored cells in Houston">
+    <div className="wm-map relative h-[calc(100dvh-4rem)] min-h-[320px] w-full overflow-hidden" style={overlayVars} role="region" aria-label="Map of scored cells in Houston">
       <p className="sr-only">
         Map markers cannot be reached with the keyboard. Use the locality search field, or the Audit list page, to open
         a cell.
@@ -719,15 +751,7 @@ export default function MapPage() {
           centerPoints={crashesAvailable === false}
         />
         <CrashLayer enabled={!level.grouped} onAvailable={setCrashesAvailable} cellIds={placeIds ?? highlightIds} satellite={base.name === "Satellite"} />
-        {trafficLayerOn && (trafficQ.data?.status === 'ok' || trafficQ.data?.status === 'stale' || trafficQ.data?.status === 'budget_reached') && trafficQ.data.cells.map((item) => {
-          const cell = cellsById.get(item.cell_id)
-          if (!cell) return null
-          const color = item.bucket === 'heavy' ? '#B83A35' : item.bucket === 'moderate' ? '#C18A2E' : '#218C78'
-          return <CircleMarker key={`traffic-${item.cell_id}`} center={[cell.lat, cell.lng]} radius={item.road_closure ? 11 : 9}
-            pathOptions={{ color: item.road_closure ? '#7F1D1D' : '#ffffff', weight: item.road_closure ? 3 : 2, fillColor: color, fillOpacity: 0.95 }}>
-            <Tooltip direction="top">{item.road_closure ? 'Road closure reported · ' : ''}{item.bucket[0].toUpperCase() + item.bucket.slice(1)} traffic · {item.status === 'stale' ? 'stale · ' : ''}{new Date(item.observed_at).toLocaleTimeString()}</Tooltip>
-          </CircleMarker>
-        })}
+        {trafficLayerOn && trafficQ.data && <TrafficLayer data={trafficQ.data} />}
         <IncidentLayer enabled={true} pickMode={pickIncidentMode} refreshKey={incidentLayerRefreshKey}
           onPick={(lat, lng) => { if (pickIncidentMode) { setIncidentPoint([lat, lng]); setPickIncidentMode(false) } }} />
         <DriverLayer position={driver.position} source={driver.source} pickMode={pickSimMode} onPick={placeSimLocation} />
@@ -735,175 +759,223 @@ export default function MapPage() {
         <FitOnce cells={cells} enabled={fitEnabled} />
       </MapContainer>
 
-      {/* Base map switch */}
-      <div className="absolute right-2 top-2 z-[1000] md:left-1/2 md:right-auto md:top-4 md:-translate-x-1/2">
-        <BaseMapSwitch names={BASE_LAYERS.map((l) => l.name)} value={base.name} onChange={pickBase} />
-      </div>
-
-      {pickSimMode && <p role="status" className="pointer-events-none absolute bottom-4 left-1/2 z-[1040] -translate-x-1/2 rounded-full bg-brass px-3 py-2 text-center text-xs font-semibold text-navy shadow-card md:bottom-auto md:top-24">Tap the map to set the simulated test location</p>}
-      {pickIncidentMode && <p role="status" className="pointer-events-none absolute bottom-4 left-1/2 z-[1040] -translate-x-1/2 rounded-full bg-navy px-3 py-2 text-center text-xs font-semibold text-ivory shadow-card md:bottom-auto md:top-24">Tap map to place report</p>}
-
-      {/* Map layer controls stay at the top-right. */}
-      <div className="absolute right-2 top-14 z-[1060] flex max-w-[calc(100%-1rem)] flex-col items-end gap-2 md:right-4 md:top-4 md:flex-row">
-        <div className="flex items-center gap-1 rounded-full bg-white/95 p-1 shadow-card">
-          <button type="button" aria-pressed={trafficLayerOn} onClick={() => setTrafficLayerOn((on) => !on)}
-            className={`min-h-9 rounded-full px-3 text-xs font-bold ${trafficLayerOn ? 'bg-navy text-ivory' : 'text-navy hover:bg-ivory-200'}`}>
-            Traffic · display only
-          </button>
-          <span role="status" aria-live="polite" className="px-2 text-[10px] font-semibold text-navy/70">
-            {trafficQ.data?.status === 'ok' ? 'Live' : trafficQ.data?.status === 'stale' ? 'Stale' : trafficQ.data?.status === 'budget_reached' ? 'Budget reached' : 'Unavailable'}
-          </span>
-        </div>
-        {mapMode === 'live' && <>
-          <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />
-          <div role="note" className="rounded-full border border-navy/15 bg-white/95 px-3 py-1.5 text-[11px] font-bold text-navy shadow-card">
-            {modelHealthQ.data?.condition_lift_applied
-              ? 'Condition lift affects ranking'
-              : 'Context only, not a validated improvement'}
-          </div>
-        </>}
-        {region ? (
-          <button
-            type="button"
-            onClick={() => setRegion(null)}
-            className="order-1 max-w-[min(55vw,24rem)] truncate rounded-full bg-brass px-3 py-1.5 text-xs font-semibold text-navy shadow-card hover:brightness-95 sm:text-sm md:order-2"
+      {/*
+        Overlay layout. Three columns that can never overlap each other:
+        left = filters and legend, centre = map toolbar and status chips, right = cell details.
+        Below md the side columns become sheets over the map.
+      */}
+      <div className="pointer-events-none absolute inset-0 z-[1000] flex gap-3 p-2 md:p-4">
+        {leftPaneOpen && (
+          <aside
+            aria-label="Map filters and legend"
+            className="wm-scroll pointer-events-auto flex flex-col gap-3 overflow-y-auto overscroll-contain max-md:absolute max-md:inset-2 max-md:z-30 max-md:rounded-2xl max-md:bg-ivory-100 max-md:p-2 max-md:shadow-card md:w-[22rem] md:shrink-0 md:pb-1"
           >
-            {regionCells.length} cells in this region. Show all
-          </button>
-        ) : placeSearch ? (
-          <button
-            type="button"
-            onClick={() => setPlaceSearch(null)}
-            title={`${placeSearch.name}, ${displayedCells.length} cells, Clear`}
-            className="order-1 max-w-[min(55vw,24rem)] truncate rounded-full bg-brass px-3 py-1.5 text-xs font-semibold text-navy shadow-card hover:brightness-95 sm:text-sm md:order-2"
-          >
-            {placeSearch.name}, {displayedCells.length} cells. Clear
-          </button>
-        ) : (
-          <div className="order-1 max-w-[min(55vw,18rem)] truncate rounded-full bg-navy/90 px-3 py-1.5 text-xs font-semibold text-ivory shadow-card sm:text-sm md:order-2">
-            {level.points
-              ? crashesAvailable === false
-                ? 'Single cells, crash points unavailable'
-                : 'Cells + crash points'
-              : level.grouped
-                ? 'Grouped cells, zoom in to open'
-                : 'Single cells, zoom in for crashes'}
-          </div>
+            <div className="shrink-0 rounded-xl border border-navy/10 bg-white/95 p-2 shadow-card">
+              <div className="grid grid-cols-3 gap-1" role="group" aria-label="Map scoring mode">
+                {(['baseline', 'live', 'what-if'] as const).map((mode) => (
+                  <button key={mode} type="button" aria-pressed={mapMode === mode}
+                    onClick={() => { setMapMode(mode); if (mode !== 'what-if') setScenario(NO_SCENARIO) }}
+                    className={`min-h-9 rounded-lg px-2 text-xs font-bold ${mapMode === mode ? 'bg-navy text-ivory' : 'bg-ivory-200 text-navy hover:bg-ivory'}`}>
+                    {mode === 'what-if' ? 'What-if' : mode === 'live' ? 'Live' : 'Baseline'}
+                  </button>
+                ))}
+              </div>
+              {mapMode === 'live' && (
+                <div className="mt-2 space-y-1.5">
+                  <LiveContextChip context={contextQ.data} loading={contextQ.loading} mapLoading={liveBatchLoading} error={liveBatchError} />
+                  <p className="px-1 text-[11px] font-bold text-navy/75">
+                    {modelHealthQ.data?.condition_lift_applied ? 'Condition lift affects ranking' : 'Context only, not a validated improvement'}
+                  </p>
+                </div>
+              )}
+              <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live context works</summary>
+                <p className="pb-1">Live mode shows the latest cached Houston-centre weather conditions and per-cell reasons. By default this is context only, not a validated improvement, and it does not change scores or rankings. Rain associations mean historically more crashes per hour in rain here; they do not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
+              </details>
+            </div>
+            <div className="shrink-0">
+              <FilterCard
+                onCollapse={collapseLeftPane}
+                summary={summaryQ.data}
+                filters={filters}
+                onChange={setFilters}
+                maxPastLimit={maxPastLimit}
+                shown={displayedCells.length}
+                total={cells.length}
+                onPlaceSearch={searchPlaces}
+                onPlaceSelect={selectPlace}
+              />
+            </div>
+            <div className="shrink-0">
+              <WhatIfCard
+                scenario={scenario}
+                onChange={(next) => { setScenario(next); setMapMode(next.night || next.rain || next.lowVis ? 'what-if' : 'baseline') }}
+                loading={whatIfQ.loading}
+                error={whatIfQ.error}
+                meanAll={scenarioStats.all}
+                meanEmerging={scenarioStats.emerging}
+                active={scenarioActive}
+              />
+            </div>
+            {!selectedId && (
+              <div className="shrink-0">
+                <RegionCard target={reportTarget} />
+              </div>
+            )}
+            <div className="shrink-0">
+              <Legend
+                scenarioMode={!!whatIf}
+                colorMode={colorMode}
+                onColorMode={setColorMode}
+                opacity={opacity}
+                onOpacity={setOpacity}
+                placeholderWeights={summaryQ.data?.placeholder_weights ?? true}
+                creditCap={summaryQ.data?.credit_cap ?? null}
+              />
+            </div>
+          </aside>
         )}
-        <DriverModeControl
-          enabled={locationAlertsEnabled}
-          onToggle={toggleLocationAlerts}
-          status={driver.status}
-          source={driver.source}
-          monitor={monitor}
-          simAllowed={driver.simAllowed}
-          simActive={driver.simActive}
-          pickingSim={pickSimMode}
-          onPickSim={() => { setPickIncidentMode(false); setPickSimMode((v) => !v) }}
-          onClearSim={() => { driver.setSimPosition(null); setPickSimMode(false); setMonitor({ kind: 'idle' }); alertedCells.current.clear() }}
-        />
-        {isTrafficPolice && <button type="button" onClick={() => { setPickSimMode(false); setPickIncidentMode((v) => !v) }} aria-pressed={pickIncidentMode}
-          aria-label={pickIncidentMode ? 'Cancel incident location selection' : 'Report a crash or near miss'}
-          className={`order-2 inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-card md:order-1 md:min-h-9 sm:text-sm ${pickIncidentMode ? 'bg-brass text-navy' : 'bg-navy text-ivory'}`}>
-          <MapPin aria-hidden="true" className="h-3.5 w-3.5" /> {pickIncidentMode ? 'Cancel report' : 'Report incident'}
-        </button>}
-      </div>
 
-      <div role="status" aria-live="polite" className={`absolute bottom-3 z-[1060] inline-flex max-w-[min(82vw,22rem)] items-center gap-1.5 rounded-full bg-white/95 px-3 py-2 text-[11px] font-semibold text-navy shadow-card md:bottom-4 ${leftPaneOpen ? 'left-3 md:left-[25rem]' : 'left-3 md:left-4'}`}>
-        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
-        {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
-          ? `Offline: scores from ${snapshotScoredAt ? new Date(snapshotScoredAt).toLocaleTimeString() : 'last snapshot'}`
-          : liveStream.state === 'reconnecting' ? 'Reconnecting to live updates' : 'Connecting to live updates'}
-      </div>
-
-      <div className={`absolute bottom-14 z-[1050] ${leftPaneOpen ? 'left-3 md:left-[25rem]' : 'left-3 md:left-4'}`}>
-        <ActivityTicker event={tickerEvent} cellsById={cellsById} onSelect={selectCell} />
-      </div>
-
-      {!leftPaneOpen && <button
-        type="button"
-        onClick={() => {
-          setLeftPaneOpen(true)
-          if (window.matchMedia('(max-width: 767px)').matches) setRightPaneOpen(false)
-        }}
-        aria-expanded={false}
-        aria-label="Show map filters and legend"
-        title="Filters and legend"
-        className="absolute left-2 top-2 z-[1060] inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-navy px-3 py-2 text-sm font-semibold text-ivory shadow-card"
-      >
-        <SlidersHorizontal aria-hidden="true" className="h-4 w-4" /> Filters
-      </button>}
-
-      {/* Left column: filters, what-if, legend */}
-      <div
-        className={`pointer-events-none absolute inset-x-2 top-44 z-[1000] ${selectedId || reportTarget ? 'max-h-[36dvh]' : 'max-h-[70dvh]'} space-y-3 overflow-y-auto md:inset-x-auto md:bottom-4 md:left-4 md:top-4 md:max-h-none md:w-[22rem] ${leftPaneOpen ? 'block' : 'hidden'}`}
-      >
-        <div className="pointer-events-auto rounded-xl border border-navy/10 bg-white/95 p-2 shadow-card">
-          <div className="grid grid-cols-3 gap-1" role="group" aria-label="Map scoring mode">
-            {(['baseline', 'live', 'what-if'] as const).map((mode) => (
-              <button key={mode} type="button" aria-pressed={mapMode === mode}
-                onClick={() => { setMapMode(mode); if (mode !== 'what-if') setScenario(NO_SCENARIO) }}
-                className={`min-h-9 rounded-lg px-2 text-xs font-bold ${mapMode === mode ? 'bg-navy text-ivory' : 'bg-ivory-200 text-navy hover:bg-ivory'}`}>
-                {mode === 'what-if' ? 'What-if' : mode === 'live' ? 'Live' : 'Baseline'}
+        {/* Centre column: toolbar on top, status at the bottom. Only the controls themselves take clicks. */}
+        <div className="relative flex min-w-0 flex-1 flex-col justify-between gap-2">
+          <div className="flex flex-wrap items-start gap-2 *:pointer-events-auto">
+            {!leftPaneOpen && (
+              <button
+                type="button"
+                onClick={openLeftPane}
+                aria-expanded={false}
+                aria-label="Show map filters and legend"
+                title="Filters and legend"
+                className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-navy px-3 py-2 text-sm font-semibold text-ivory shadow-card hover:bg-navy-800"
+              >
+                <SlidersHorizontal aria-hidden="true" className="h-4 w-4" /> Filters
               </button>
-            ))}
+            )}
+            {region ? (
+              <button
+                type="button"
+                onClick={() => setRegion(null)}
+                className="inline-flex min-h-10 max-w-full items-center truncate rounded-full bg-brass px-3 py-1.5 text-xs font-semibold text-navy shadow-card hover:brightness-95 sm:text-sm"
+              >
+                <span className="truncate">{regionCells.length} cells in this region</span><span className="ml-1.5 underline">Show all</span>
+              </button>
+            ) : placeSearch ? (
+              <button
+                type="button"
+                onClick={() => setPlaceSearch(null)}
+                title={`${placeSearch.name}, ${displayedCells.length} cells, Clear`}
+                className="inline-flex min-h-10 max-w-full items-center rounded-full bg-brass px-3 py-1.5 text-xs font-semibold text-navy shadow-card hover:brightness-95 sm:text-sm"
+              >
+                <span className="truncate">{placeSearch.name}, {displayedCells.length} cells</span><span className="ml-1.5 underline">Clear</span>
+              </button>
+            ) : null}
+            <div className="ml-auto flex max-w-full flex-wrap items-start justify-end gap-2 *:pointer-events-auto">
+              <BaseMapSwitch names={BASE_LAYERS.map((l) => l.name)} value={base.name} onChange={pickBase} />
+              <TrafficControl data={trafficQ.data} loading={trafficQ.loading} on={trafficLayerOn} onToggle={() => setTrafficLayerOn((on) => !on)} />
+              <DriverModeControl
+                enabled={locationAlertsEnabled}
+                onToggle={toggleLocationAlerts}
+                status={driver.status}
+                source={driver.source}
+                monitor={monitor}
+                simAllowed={driver.simAllowed}
+                simActive={driver.simActive}
+                pickingSim={pickSimMode}
+                onPickSim={() => { setPickIncidentMode(false); setPickSimMode((v) => !v) }}
+                onClearSim={() => { driver.setSimPosition(null); setPickSimMode(false); setMonitor({ kind: 'idle' }); alertedCells.current.clear() }}
+              />
+              {isTrafficPolice && <button type="button" onClick={() => { setPickSimMode(false); setPickIncidentMode((v) => !v) }} aria-pressed={pickIncidentMode}
+                aria-label={pickIncidentMode ? 'Cancel incident location selection' : 'Report a crash or near miss'}
+                className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-card md:min-h-9 sm:text-sm ${pickIncidentMode ? 'bg-brass text-navy' : 'bg-navy text-ivory hover:bg-navy-800'}`}>
+                <MapPin aria-hidden="true" className="h-3.5 w-3.5" /> {pickIncidentMode ? 'Cancel report' : 'Report incident'}
+              </button>}
+              {selectedId && !rightPaneOpen && (
+                <button type="button" onClick={showDetails}
+                  className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-navy shadow-card ring-1 ring-navy/10 hover:bg-ivory sm:text-sm">
+                  <PanelRightOpen aria-hidden="true" className="h-4 w-4" /> Cell details
+                </button>
+              )}
+            </div>
           </div>
-          <details className="mt-1 text-xs text-navy/70"><summary className="min-h-7 cursor-pointer font-semibold">How live context works</summary>
-            <p className="pb-1">Live mode shows the latest cached Houston-centre weather conditions and per-cell reasons. By default this is context only, not a validated improvement, and it does not change scores or rankings. Rain associations mean historically more crashes per hour in rain here; they do not show that rain causes crashes. Readings are city-wide context, not street-level measurements. An unavailable live inference is shown as unavailable.</p>
-          </details>
-        </div>
-        <div className="pointer-events-auto">
-          <FilterCard
-            onCollapse={() => setLeftPaneOpen(false)}
-            summary={summaryQ.data}
-            filters={filters}
-            onChange={setFilters}
-            maxPastLimit={maxPastLimit}
-            shown={displayedCells.length}
-            total={cells.length}
-            onPlaceSearch={searchPlaces}
-            onPlaceSelect={selectPlace}
-          />
-        </div>
-        <div className="pointer-events-auto">
-          <WhatIfCard
-            scenario={scenario}
-            onChange={(next) => { setScenario(next); setMapMode(next.night || next.rain || next.lowVis ? 'what-if' : 'baseline') }}
-            loading={whatIfQ.loading}
-            error={whatIfQ.error}
-            meanAll={scenarioStats.all}
-            meanEmerging={scenarioStats.emerging}
-            active={scenarioActive}
-          />
-        </div>
-        {!reportTarget && (
-          <div className="pointer-events-auto">
-            <RegionCard target={null} />
-          </div>
-        )}
-        <div className="pointer-events-auto">
-          <Legend
-            scenarioMode={!!whatIf}
-            colorMode={colorMode}
-            onColorMode={setColorMode}
-            opacity={opacity}
-            onOpacity={setOpacity}
-            placeholderWeights={summaryQ.data?.placeholder_weights ?? true}
-            creditCap={summaryQ.data?.credit_cap ?? null}
-          />
-        </div>
-      </div>
 
-      {(reportTarget || selectedId) && rightPaneOpen && (
-        <div className={`${leftPaneOpen ? 'max-md:hidden' : ''} pointer-events-none absolute inset-x-2 z-[1000] flex flex-col gap-3 md:inset-x-auto md:right-4 md:w-[26rem] ${
-          selectedId ? 'bottom-2 h-[55dvh] max-h-[520px] min-h-[280px] md:bottom-4 md:top-16 md:h-auto md:max-h-none' : 'top-24 bottom-2 md:top-16'
-        }`}>
-          {reportTarget && (
-            <div className="pointer-events-auto shrink-0">
-              <RegionCard target={reportTarget} compact />
+          {/* Loading / error / empty states sit in the middle of the visible map. */}
+          {cellsQ.loading && (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl border border-navy/10 bg-white/95 px-4 py-2 shadow-card" role="status" aria-live="polite">
+              <span className="inline-flex items-center gap-2 whitespace-nowrap text-sm font-semibold text-navy"><span aria-hidden="true" className="h-2.5 w-2.5 animate-pulse rounded-full bg-brass" />Loading map cells…</span>
             </div>
           )}
-          {selectedId && (
+          {cellsQ.error && (
+            <div className="pointer-events-auto absolute inset-x-0 top-1/3 mx-auto w-[min(40rem,100%)]">
+              <ErrorBanner message={cellsQ.error} onRetry={cellsQ.reload} />
+            </div>
+          )}
+          {!cellsQ.loading && !cellsQ.error && displayedCells.length === 0 && (
+            <div className="pointer-events-auto absolute left-1/2 top-1/2 w-[min(26rem,100%)] -translate-x-1/2 -translate-y-1/2">
+              <Card className="p-5 text-center">
+                <p className="font-serif text-xl font-bold">
+                  {cells.length === 0 ? 'No cells in the database yet' : placeSearch ? `No scored cells found in ${placeSearch.name}` : 'No cells match these filters'}
+                </p>
+                <p className="mt-1 text-navy/75">
+                  {cells.length === 0
+                    ? 'This backend has no scored cells loaded. Import the project dataset into its database, then reload this page.'
+                    : placeSearch ? 'Try another locality or clear the search.' : 'Loosen a filter to see cells again.'}
+                </p>
+                {cells.length > 0 && !placeSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setFilters(DEFAULT_FILTERS)}
+                    className="mt-3 rounded-lg bg-navy px-4 py-2 font-semibold text-ivory hover:bg-navy-800"
+                  >
+                    Reset filters
+                  </button>
+                )}
+              </Card>
+            </div>
+          )}
+
+          <div className="flex flex-col items-start gap-2 *:pointer-events-auto" style={{ marginRight: 'var(--wm-zoom-gutter, 0px)' }}>
+            {pickSimMode && <p role="status" className="rounded-full bg-brass px-3 py-2 text-xs font-semibold text-navy shadow-card">Tap the map to set the simulated test location</p>}
+            {pickIncidentMode && <p role="status" className="rounded-full bg-navy px-3 py-2 text-xs font-semibold text-ivory shadow-card">Tap the map to place the report</p>}
+            {demoStep !== null && (
+              <div className="w-full max-w-xl">
+                <DemoTour
+                  step={demoStep}
+                  detail={demoDetail}
+                  loading={!demoDetail && detailQ.loading}
+                  error={detailQ.error}
+                  onPrev={() => goStep(Math.max(0, demoStep - 1))}
+                  onNext={() => goStep(Math.min(DEMO_CELLS.length - 1, demoStep + 1))}
+                  onExit={() => setDemoStep(null)}
+                />
+              </div>
+            )}
+            {!(selectedId && rightPaneOpen) && <ActivityTicker event={tickerEvent} cellsById={cellsById} onSelect={selectCell} />}
+            <div className="flex max-w-full flex-wrap items-center gap-2">
+              <div role="status" aria-live="polite" className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-white/95 px-3 py-2 text-[11px] font-semibold text-navy shadow-card">
+                <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${liveStream.state === 'live' ? 'bg-teal' : liveStream.state === 'offline' ? 'bg-brick' : 'bg-brass'}`} />
+                <span className="truncate">
+                  {liveStream.state === 'live' ? 'Live updates' : liveStream.state === 'offline'
+                    ? `Offline: scores from ${snapshotScoredAt ? new Date(snapshotScoredAt).toLocaleTimeString() : 'last snapshot'}`
+                    : liveStream.state === 'reconnecting' ? 'Reconnecting to live updates' : 'Connecting to live updates'}
+                </span>
+              </div>
+              <div className="inline-flex max-w-full items-center rounded-full bg-navy/90 px-3 py-2 text-[11px] font-semibold text-ivory shadow-card max-sm:hidden">
+                <span className="truncate">
+                  {level.points
+                    ? crashesAvailable === false ? 'Single cells (crash points not loaded)' : 'Cells and crash points'
+                    : level.grouped ? 'Grouped cells: zoom in to open' : 'Single cells: zoom in for crashes'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {selectedId && rightPaneOpen && (
+          <div className="pointer-events-none flex flex-col gap-3 max-md:absolute max-md:inset-x-2 max-md:bottom-2 max-md:z-20 max-md:h-[min(58dvh,560px)] md:w-[26rem] md:shrink-0">
+            {reportTarget && (
+              <div className="pointer-events-auto shrink-0">
+                <RegionCard target={reportTarget} compact />
+              </div>
+            )}
             <div className="pointer-events-auto min-h-0 flex-1">
               <DetailPanel
                 key={selectedId}
@@ -913,6 +985,7 @@ export default function MapPage() {
                 error={detailQ.error}
                 onRetry={detailQ.reload}
                 onClose={() => selectCell(null)}
+                onHide={() => setRightPaneOpen(false)}
                 scenario={scenarioActive && selectedPrediction ? {
                   baseline: detail?.baseline_prob ?? null,
                   scenario: selectedPrediction.risk_probability,
@@ -925,24 +998,9 @@ export default function MapPage() {
                 conditionLiftApplied={modelHealthQ.data?.condition_lift_applied ?? false}
               />
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Demo card */}
-      {demoStep !== null && (
-        <div className="absolute inset-x-2 top-14 z-[1060] md:inset-x-auto md:bottom-4 md:left-[25rem] md:right-[29rem] md:top-auto">
-          <DemoTour
-            step={demoStep}
-            detail={demoDetail}
-            loading={!demoDetail && detailQ.loading}
-            error={detailQ.error}
-            onPrev={() => goStep(Math.max(0, demoStep - 1))}
-            onNext={() => goStep(Math.min(DEMO_CELLS.length - 1, demoStep + 1))}
-            onExit={() => setDemoStep(null)}
-          />
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       {incidentPoint && <IncidentReportDialog point={incidentPoint} onClose={() => setIncidentPoint(null)} onSubmit={async (body) => {
         let cellId: string
@@ -961,7 +1019,7 @@ export default function MapPage() {
           // Preserve report submission when model inference is unavailable without inventing a score contribution.
           const report = await opsApi.createIncident(body)
           cellId = report.cell_id
-          notify('Report saved locally, score will update when the connection returns')
+          notify('Report saved. Its score effect will appear once live scoring is back.')
         }
         if (mapPrediction) {
           setIncidentPredictions((current) => new Map(current).set(cellId, mapPrediction!))
@@ -973,40 +1031,6 @@ export default function MapPage() {
         setColorMode('score')
       }} />}
 
-      {/* Loading / error / empty states */}
-      {cellsQ.loading && (
-        <div className="pointer-events-none absolute bottom-20 left-1/2 z-[1100] -translate-x-1/2 rounded-xl border border-navy/10 bg-white/95 px-4 py-2 shadow-card md:bottom-auto md:top-16" role="status" aria-live="polite">
-          <span className="inline-flex items-center gap-2 text-sm font-semibold text-navy"><span aria-hidden="true" className="h-2.5 w-2.5 animate-pulse rounded-full bg-brass" />Loading map cells…</span>
-        </div>
-      )}
-      {cellsQ.error && (
-        <div className="absolute left-1/2 top-4 z-[1100] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2">
-          <ErrorBanner message={cellsQ.error} onRetry={cellsQ.reload} />
-        </div>
-      )}
-      {!cellsQ.loading && !cellsQ.error && displayedCells.length === 0 && (
-        <div className="absolute left-1/2 top-1/2 z-[1000] w-[min(26rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2">
-          <Card className="p-5 text-center">
-            <p className="font-serif text-xl font-bold">
-              {cells.length === 0 ? 'No cells in the database yet' : placeSearch ? `No scored cells found in ${placeSearch.name}` : 'No cells match these filters'}
-            </p>
-            <p className="mt-1 text-navy/75">
-              {cells.length === 0
-                ? 'This backend has no scored cells loaded. Import the project dataset into its database, then reload this page.'
-                : placeSearch ? 'Try another locality or clear the search.' : 'Loosen a filter to see cells again.'}
-            </p>
-            {cells.length > 0 && !placeSearch && (
-              <button
-                type="button"
-                onClick={() => setFilters(DEFAULT_FILTERS)}
-                className="mt-3 rounded-lg bg-navy px-4 py-2 font-semibold text-ivory hover:bg-navy-800"
-              >
-                Reset filters
-              </button>
-            )}
-          </Card>
-        </div>
-      )}
       <Toast toast={toast} onClose={closeToast} />
     </div>
   )

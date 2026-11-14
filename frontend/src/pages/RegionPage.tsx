@@ -100,11 +100,24 @@ export default function RegionPage() {
   }, [])
   const closeToast = useCallback(() => setToast(null), [])
 
+  /** Opening the assistant from its button uses this region's newest ready report, so nobody has to upload one. */
+  const attachLatestReport = useCallback(async () => {
+    try {
+      const ready = (await opsApi.listReports(kind, key)).find((r) => r.status === 'ready')
+      if (!ready) return
+      const blob = await opsApi.reportFile(ready.report_id, 'json')
+      const parsed = JSON.parse(await blob.text()) as RegionReport
+      if (parsed?.report_id) setAttachReport((current) => current ?? parsed)
+    } catch {
+      /* the assistant still answers general questions without a report */
+    }
+  }, [kind, key])
   const openAssistant = useCallback((report?: RegionReport | null) => {
     if (report) setAttachReport(report)
+    else if (!attachReport) void attachLatestReport()
     setChatMounted(true)
     setChatOpen(true)
-  }, [])
+  }, [attachReport, attachLatestReport])
   const closeAssistant = useCallback(() => {
     setChatOpen(false)
     setChatExpanded(false)
@@ -159,7 +172,7 @@ export default function RegionPage() {
 
   return (
         <div className="flex min-h-full flex-1 flex-col bg-[#f4f1eb]">
-      <PageContainer className="flex max-w-7xl flex-1 flex-col py-6 md:py-9">
+      <PageContainer className="flex max-w-7xl flex-1 flex-col pb-24 pt-6 md:pt-9">
         <nav aria-label="Breadcrumb" className="mb-4 text-sm">
           <Link to="/map" className="inline-flex items-center gap-2 rounded-full px-2 py-1 font-semibold text-brass-700 transition hover:bg-white/70 hover:underline">
             <span aria-hidden="true">←</span> Back to the map

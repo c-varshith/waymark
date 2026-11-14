@@ -353,7 +353,7 @@ def test_role_scope_filters_model_cards(ready, monkeypatch):
     ops, h, rid, js, pdf = ready
     cards = [good_card(title="Engineer owned", owner_role="engineer"), good_card(title="Planner owned", owner_role="planner"),
              good_card(title="Community owned", owner_role="planner", category="community_awareness")]
-    for role, expect in (("engineer", ["Engineer owned"]), ("community", ["Planner owned", "Community owned"]),
+    for role, expect in (("engineer", ["Engineer owned"]), ("community", ["Engineer owned", "Planner owned", "Community owned"]),
                          ("planner", ["Engineer owned", "Planner owned", "Community owned"])):
         with_client(monkeypatch, FakeClient(cards=cards))
         sid = session(ops, h, role)
@@ -378,7 +378,7 @@ def test_provider_errors_fall_back_without_leaking(ready, monkeypatch, error):
     with_client(monkeypatch, FakeClient(error=error))
     sid = session(ops, h)
     attach(ops, h, sid, js)
-    r = ops.post(f"/api/chat/sessions/{sid}/messages", json={"text": "help"}, headers=h)
+    r = ops.post(f"/api/chat/sessions/{sid}/messages", json={"text": "What should we do first?"}, headers=h)
     assert r.status_code == 200
     assert "SECRET" not in r.text and "rate_limit_error" not in r.text and "invalid x-api-key" not in r.text
     events = parse_sse(r.text)

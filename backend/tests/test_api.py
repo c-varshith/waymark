@@ -104,7 +104,7 @@ def test_audit_list_and_csv(client):
     assert client.get("/api/audit-list?q=zzz").json()["items"] == []
     r = client.get("/api/audit-list?format=csv")
     assert r.headers["content-type"].startswith("text/csv") and "attachment" in r.headers["content-disposition"]
-    assert r.text.splitlines()[0].startswith("cell_id,region,lat,lng") and "EM1" in r.text
+    assert r.text.splitlines()[0].startswith("cell_id,region,locality,lat,lng") and "EM1" in r.text
     assert client.get("/api/audit-list?sort=bogus").status_code == 422
 
 

@@ -223,3 +223,13 @@ h3 {
   .auth-screen { padding: 1rem 0.65rem; }
   .auth-card { padding: 1.5rem 1.15rem; }
 }
+
+/* Map overlays: Leaflet's own controls move aside when the details pane or sheet is open. */
+.wm-map .leaflet-right, .wm-map .leaflet-bottom { transition: right 180ms ease, bottom 180ms ease; }
+@media (min-width: 768px) {
+  .wm-map .leaflet-right { right: var(--wm-right, 0px); }
+}
+@media (max-width: 767px) {
+  .wm-map .leaflet-bottom { bottom: var(--wm-bottom, 0px); }
+}
+.wm-scroll { scrollbar-width: thin; scrollbar-color: rgb(30 41 59 / 0.25) transparent; }

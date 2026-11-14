@@ -203,6 +203,7 @@ def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport]
         return
     digest = report_digest(report)
     text, cards, fallback = "", [], False
+    wants_actions = requests_actions(question)
     try:
         client = llm.get_client()
         if client is None:
@@ -213,9 +214,12 @@ def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport]
                 text += payload
             else:
                 result = payload
-        cards = llm.validate_cards(result.raw_cards, digest, role) if result else []
         if not result:
             raise llm.LLMError("the model returned no response")
+        cards = llm.validate_cards(result.raw_cards, digest, role)
+        if result.raw_cards and not cards:
+            # Every proposed card failed validation (unknown category, invented cell id, ungrounded number...).
+            raise llm.LLMError("all model cards were rejected by validation")
         if not text.strip():
             if cards:
                 text = "I found report-backed actions that may help. Review the cards below before adding them to the plan."
@@ -225,10 +229,12 @@ def run_turn(engine, session_id: str, role: Role, report: Optional[RegionReport]
     except llm.LLMError as e:
         log.info("assistant fallback: %s", e)
         fallback = True
-        cards = rule_based_cards(report, role) if requests_actions(question) else []
+        cards = rule_based_cards(report, role) if wants_actions else []
         reply = fallback_reply(report, role, cards, question)
-        yield from (("token", c) for c in _chunks(reply))
-        text = reply
+        partial = text.strip()
+        # Keep whatever the model already wrote before it failed, then add the rule-based answer.
+        text = f"{partial}\n\n{reply}" if partial else reply
+        yield from (("token", c) for c in _chunks(text))
     for c in cards:
         yield "card", c
     yield "done", (text, cards, fallback)

@@ -131,10 +131,10 @@ def test_unverified_measure_never_lowers_the_adjusted_score(ops):
     h = auth(ops, "engineer")
     m = make_measure(ops, h, cells=TOP2)
     move(ops, h, m["id"], "in_progress")
-    upload(ops, h, m["id"], "after")
+    upload(ops, h, m["id"], "after")                                             # auto-advances to evidence_submitted
     c = ops.get(f"/api/cells/{TOP2[-1]}").json()
     assert c["adjusted_risk_score"] == c["risk_score"] == 49.0 and c["has_measures"] is True
-    assert c["projected_risk_score"] == pytest.approx(47.78)
+    assert c["projected_risk_score"] == pytest.approx(45.33)                      # a projection only, never the confirmed score
 
 
 def test_projected_score_moves_with_progress_while_confirmed_score_waits_for_verification(ops, roles):

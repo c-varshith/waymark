@@ -188,7 +188,7 @@ def fallback_reply(report: RegionReport | dict, role: Role | str, cards: list[Re
         return f"Hi! I can answer questions about the {a.region.name} report, such as its risk score, hotspots, or limitations. What would you like to know?"
 
     if action_request:
-        lines = [f"The AI assistant is unavailable, so these suggestions use report {r.report_id} for {a.region.name}."]
+        lines = [f"The AI assistant is unavailable, so these rule-based suggestions use report {r.report_id} for {a.region.name}."]
         if cards:
             lines.append(f"I found {len(cards)} report-backed action suggestion{'s' if len(cards) != 1 else ''}; review the cards below before adding them to the plan.")
         else:

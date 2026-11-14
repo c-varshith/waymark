@@ -57,6 +57,15 @@ class TrafficCell(BaseModel):
     observed_at: str
     road_closure: bool = False
     status: Literal["ok", "stale"]
+    # Road segment polyline as [lat, lng] pairs, so the map draws congestion along the street.
+    geometry: list[list[float]] = Field(default_factory=list)
+
+
+class TrafficTiles(BaseModel):
+    available: bool = False
+    url: str
+    min_zoom: int
+    max_zoom: int
 
 
 class LiveTraffic(BaseModel):
@@ -72,6 +81,7 @@ class LiveTraffic(BaseModel):
     monthly_cap: int
     score_effect: bool = False
     error: Optional[str] = None
+    tiles: Optional[TrafficTiles] = None
 
 
 class TrafficWatchRequest(BaseModel):

@@ -129,8 +129,14 @@ def region_risk_index(cells: Iterable[Cell | float | None]) -> Optional[float]:
     return math.fsum(vals) / len(vals) if vals else None
 
 
+def round_half_up(v: float, places: int = 2) -> float:
+    """Round like a person would (47.775 -> 47.78); plain round() drifts on binary floats such as 47.77499999."""
+    from decimal import ROUND_HALF_UP, Decimal
+    return float(Decimal(str(round(v, 6))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
+
+
 def round_index(v: Optional[float]) -> Optional[float]:
-    return None if v is None else round(v, 2)
+    return None if v is None else round_half_up(v)
 
 
 def data_version(cells: list[Cell]) -> str:
@@ -143,7 +149,10 @@ def data_version(cells: list[Cell]) -> str:
 
 # ------------------------------------------------------------------ analysis
 def _has_crashes(db: Session) -> bool:
-    return inspect(db.get_bind()).has_table(Crash.__tablename__)
+    """True only when crash points were imported; an empty placeholder table counts as not loaded."""
+    if not inspect(db.get_bind()).has_table(Crash.__tablename__):
+        return False
+    return db.scalar(select(Crash.crash_id).limit(1)) is not None
 
 
 def _crash_aggregates(db: Session, cell_ids: list[str]) -> dict:

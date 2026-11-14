@@ -19,7 +19,7 @@ from .models import Cell
 from .models_ops import Evidence, Measure, MeasureCell, MeasureEvent, RiskSnapshot, utcnow
 from .ops_common import api_error, iso, iso_req
 from .permissions import can
-from .regions import ResolvedRegion, _cells_by_ids, region_risk_index, resolve_region, round_index
+from .regions import ResolvedRegion, _cells_by_ids, region_risk_index, resolve_region, round_half_up, round_index
 from .risk_overlay import (EXCLUDED_STATUSES, adjusted_region_index, adjusted_score, combined_credit,
                            implementation_pct, projected_credit, verified_pct)
 from .schemas_ops import (CellMeasureBrief, Evidence as EvidenceOut, Measure as MeasureOut, MeasureDetail,
@@ -229,13 +229,18 @@ def apply_transition(db: Session, m: Measure, to: str, user: User, note: Optiona
                         + (f"Allowed next: {', '.join(allowed)}." if allowed else "It is final."), allowed=allowed,
                         current=frm)
 
+    # Role permission first: a role that can never change status gets "forbidden", not an ownership error.
+    if frm == "evidence_submitted":
+        if not can(user.role, "measure.verify"):
+            raise api_error(403, "forbidden", "Only a planner can approve or reject submitted evidence.")
+    elif not auto and not can(user.role, "measure.transition"):
+        raise api_error(403, "forbidden", f"Your role ({user.role.value}) cannot change a measure's status.")
+
     if user.role is not Role.planner and m.owner_role != user.role.value:
         raise api_error(403, "wrong_measure_owner", "Only the assigned workspace can update this measure.")
 
     event_type = "transition"
     if frm == "evidence_submitted":
-        if not can(user.role, "measure.verify"):
-            raise api_error(403, "forbidden", "Only a planner can approve or reject submitted evidence.")
         if is_self_verification(db, m, user):
             raise api_error(403, "self_verification",
                             "You cannot review a measure you created or whose evidence you uploaded. "
@@ -248,8 +253,6 @@ def apply_transition(db: Session, m: Measure, to: str, user: User, note: Optiona
             if not (note or "").strip():
                 raise api_error(422, "reason_required", "Give a reason when sending a measure back for more work.")
             event_type = "reject"
-    elif not auto and not can(user.role, "measure.transition"):
-        raise api_error(403, "forbidden", f"Your role ({user.role.value}) cannot change a measure's status.")
     elif frm == "in_progress" and to == "evidence_submitted" and not auto and not has_evidence(db, m.id):
         raise api_error(409, "evidence_required", "Upload at least one photo before submitting evidence.")
 
@@ -289,4 +292,4 @@ def cell_overlay(db: Session, cell_ids: Optional[Iterable[str]] = None) -> tuple
 
 def overlay_fields(base: Optional[float], credit: float) -> Optional[float]:
     v = adjusted_score(base, credit)
-    return None if v is None else round(v, 2)
+    return None if v is None else round_half_up(v)
