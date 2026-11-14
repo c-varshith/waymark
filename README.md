@@ -6,7 +6,7 @@
 
 Explore road-risk patterns, understand the signals behind each score, and help teams prioritize locations for human review.
 
-[![Live demo](https://img.shields.io/badge/LIVE%20DEMO-Open%20WAYMARK-f28b54?style=for-the-badge)](https://waymark-frontend.onrender.com/)
+[![Live demo](https://img.shields.io/badge/LIVE%20DEMO-Open%20WAYMARK-f28b54?style=for-the-badge)](https://waymark-annb.onrender.com)
 [![Source repository](https://img.shields.io/badge/GITHUB-Source%20repository-30343b?style=for-the-badge&logo=github)](https://github.com/c-varshith/waymark)
 
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
