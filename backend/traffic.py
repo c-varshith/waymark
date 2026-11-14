@@ -495,7 +495,9 @@ class TrafficTileProxy:
         self.clock = clock
         self.ttl = config.TRAFFIC_TILE_TTL_SECONDS
         self.max_entries = config.TRAFFIC_TILE_CACHE_SIZE
+        self.max_cache_bytes = config.TRAFFIC_TILE_CACHE_MAX_BYTES
         self._cache: "OrderedDict[tuple[int, int, int], tuple[float, bytes]]" = OrderedDict()
+        self._cache_bytes = 0
         self._day: str | None = None
         self._count = 0
         self._inflight: dict[tuple[int, int, int], asyncio.Future[bytes]] = {}
@@ -546,10 +548,16 @@ class TrafficTileProxy:
                 body = response.content
             if not body.startswith(b"\x89PNG"):
                 raise ValueError("TomTom tile response was not a PNG")
-            self._cache[key] = (time.monotonic(), body)
-            self._cache.move_to_end(key)
-            while len(self._cache) > self.max_entries:
-                self._cache.popitem(last=False)
+            old = self._cache.pop(key, None)
+            if old is not None:
+                self._cache_bytes -= len(old[1])
+            if self.max_entries > 0 and self.max_cache_bytes > 0 and len(body) <= self.max_cache_bytes:
+                self._cache[key] = (time.monotonic(), body)
+                self._cache_bytes += len(body)
+                while (len(self._cache) > self.max_entries
+                       or self._cache_bytes > self.max_cache_bytes):
+                    _old_key, (_inserted_at, old_body) = self._cache.popitem(last=False)
+                    self._cache_bytes -= len(old_body)
             future.set_result(body)
             return body
         except BaseException as exc:

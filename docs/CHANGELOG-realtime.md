@@ -8,6 +8,12 @@
 - The Live map refreshes scores when a traffic update arrives only if the optional effect is enabled. It keeps the existing cached cell grid while doing so.
 - See [traffic_lift.md](traffic_lift.md) for the CSV format, build command, validation gates, and data-source requirements.
 
+## Render memory safeguard for traffic tiles
+
+- The Render log supplied for the 512 MiB instance showed repeated TomTom traffic-tile requests shortly before the process restarted. The tile proxy previously limited entry count to 3,000 but did not cap total cached image bytes.
+- Reduced the default entry limit to 256 and added a 16 MiB total byte cap for cached tile bodies. This bounds that cache; it does not guarantee the entire ML service fits within a 512 MiB instance.
+- To stop tile fetching immediately, set `WAYMARK_TRAFFIC_TILES=false` in the backend service environment and restart it. This disables the raster overlay; it does not disable the separate watched-cell traffic readings.
+
 ## Task 0: condition lift defaults to context only
 
 - Added `WAYMARK_CONDITION_LIFT_APPLIES_TO_RANKING`, defaulting to `false`. Live mode continues to return active condition context and per-cell reasons, while its score and ranking remain unchanged unless explicitly enabled.

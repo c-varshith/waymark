@@ -15,7 +15,7 @@ Explore road-risk patterns, understand the signals behind each score, and help t
 ![LightGBM](https://img.shields.io/badge/ML-LightGBM-4c8c4a?logo=lightgbm&logoColor=white)
 ![Maps](https://img.shields.io/badge/Maps-Leaflet%20%2B%20H3-356b58?logo=leaflet&logoColor=white)
 
-[Screenshots](#screenshots) · [Features](#features) · [Quick start](#quick-start) · [Architecture](#architecture) · [API](#api) · [Model and data](#model-and-data) · [Responsible use](#limitations-and-responsible-use)
+[Screenshots](#screenshots) · [Features](#features) · [Quick start](#quick-start) · [Architecture](#architecture) · [Model and data](#model-and-data) · [FAQ](#frequently-asked-questions) · [API](#api) · [Responsible use](#limitations-and-responsible-use)
 
 </div>
 
@@ -157,6 +157,44 @@ At startup, FastAPI loads the packaged LightGBM ensemble, SHAP explainer, featur
 - Incident overlays are separate from model predictions: active crash reports add 20 points and near-miss reports add 10, capped at 100. The overlay is process-local and intended for a single API worker; persisted reports rebuild it at startup.
 
 The data and model are Houston-specific. Review the evidence and quality pages before interpreting the map. For the current inference performance results and manual checks, see [`docs/CHANGELOG-realtime.md`](docs/CHANGELOG-realtime.md) and [`docs/manual-checks/phase-1.md`](docs/manual-checks/phase-1.md).
+
+## Frequently asked questions
+
+### Why use the US Accidents dataset?
+
+It provides a large historical set of crash records with locations, timestamps, and related conditions. Those fields support the project's core workflow: grouping crashes into map cells, engineering features, and evaluating scores against later historical outcomes. The project uses the Houston-area subset for its pilot. The dataset is not a complete or authoritative record of every crash; reporting coverage, missing values, and collection practices can affect what it represents. See the [dataset and attribution notes](#model-and-data).
+
+### Why Houston?
+
+Houston is the current pilot area for building and evaluating the full mapping and inference workflow in one place. The model artifacts and cell feature store are Houston-specific. A different city needs suitable local data, new feature generation, and its own evaluation before its scores should be used.
+
+### Why use H3 hexagons?
+
+H3 gives the app consistent cell IDs and a regular grid for aggregating crash history and displaying scores. The current grid uses resolution 9, with cells averaging roughly 0.1 km². The hexagons are an analysis unit; they do not imply that risk is uniform across every street inside a cell.
+
+### Why include simulations?
+
+The rain, night, and low-visibility controls let someone compare how selected model inputs affect a cell's score. They are controlled what-if scenarios, not a forecast or a claim about current conditions. A simulation should be read as “what the model returns with these inputs,” not “what will happen on this road.”
+
+### Why is the score 0–100 instead of a crash probability?
+
+The displayed score ranks a model probability against a saved reference distribution. It is useful for comparing cells in this project, but it is not calibrated as a percentage chance of a crash. The API's `risk_probability` is also a model output, not a validated individual-road forecast. See [Model and data](#model-and-data).
+
+### Why LightGBM and SHAP?
+
+LightGBM is used to score the project's structured, tabular cell features efficiently. SHAP provides a breakdown of which model inputs contributed to a selected cell's output. These contributions describe the model's calculation; they do not establish that a factor caused crashes or that changing it will prevent them.
+
+### What does “Live” mode update?
+
+Live mode reads cached provider context and reports its freshness or availability. By default, weather conditions are explanatory context and do not change the model ranking. Incident reports are shown as a separate, decaying overlay; they do not retrain the model. Experimental traffic scoring is disabled by default and requires a separately licensed historical traffic archive, a passing held-out validation, and explicit backend opt-in. Live provider readings are not saved as training history. See [`docs/traffic_lift.md`](docs/traffic_lift.md).
+
+### Why not train continuously from reports or live traffic?
+
+Changing model weights while people are using the map would make scores harder to reproduce and review. WAYMARK serves packaged model weights; incoming incident reports update a separate temporary overlay. Live traffic readings also cannot be treated as historical training data under the current provider terms review. Any future traffic effect must use a separately licensed archive and pass the documented validation gate.
+
+### Can I use the current model for another city or operational decisions?
+
+Not without additional work. The current feature store and evaluation are specific to Houston and the available historical records. This prototype is decision support for human review, not a substitute for local crash data, engineering judgment, or a safety assessment. See [Limitations and responsible use](#limitations-and-responsible-use).
 
 ## API
 
